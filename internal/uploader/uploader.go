@@ -18,6 +18,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"photo-sync/internal/api"
 	"photo-sync/internal/apiclient"
 	"photo-sync/internal/manifest"
@@ -249,11 +251,13 @@ func process(ctx context.Context, cfg Config, sessionID, path string) result {
 	if err != nil {
 		return fail("preview", err)
 	}
-	if err := cfg.Client.Upload(ctx, reg.UploadURLs.Thumb, thumb); err != nil {
-		return fail("thumb", err)
-	}
-	if err := cfg.Client.Upload(ctx, reg.UploadURLs.Preview, prev); err != nil {
-		return fail("preview", err)
+	// Upload both renditions concurrently. If one fails, gctx is cancelled
+	// so the other stops early; Wait returns the first error.
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error { return uploadRendition(gctx, cfg.Client, "thumb", reg.UploadURLs.Thumb, thumb) })
+	g.Go(func() error { return uploadRendition(gctx, cfg.Client, "preview", reg.UploadURLs.Preview, prev) })
+	if err := g.Wait(); err != nil {
+		return fail("upload", err)
 	}
 	if _, err := cfg.Client.CompletePhoto(ctx, sessionID, reg.PhotoID); err != nil {
 		return fail("complete", err)
@@ -264,6 +268,13 @@ func process(ctx context.Context, cfg Config, sessionID, path string) result {
 		r.action = "re-uploaded" // forced, or resuming an interrupted upload
 	}
 	return r
+}
+
+func uploadRendition(ctx context.Context, c *apiclient.Client, name, url string, jpeg []byte) error {
+	if err := c.Upload(ctx, url, jpeg); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	return nil
 }
 
 // findRaws lists supported raw files in dir (not recursive), sorted by name.

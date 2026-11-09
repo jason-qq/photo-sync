@@ -155,6 +155,32 @@ func TestRunPerFileFailure(t *testing.T) {
 	}
 }
 
+func TestRunUploadFailure(t *testing.T) {
+	h := newHarness(t)
+	// A file where the blob store needs a directory makes every PUT fail.
+	writeFile(t, h.env.BlobDir, "sessions", []byte("blocker"))
+
+	sum, err := Run(context.Background(), Config{
+		Dir: h.dir, Client: h.client, APIURL: h.env.URL, Date: "2026-11-09", Workers: 2, Out: &h.out,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expect(t, sum, 0, 0, 3)
+	out := h.out.String()
+	if !strings.Contains(out, ": upload: thumb: ") && !strings.Contains(out, ": upload: preview: ") {
+		t.Errorf("expected labelled upload failures, got:\n%s", out)
+	}
+	if n := len(h.manifest().Photos); n != 0 {
+		t.Errorf("manifest has %d entries, want 0", n)
+	}
+
+	// Once storage works again, a rerun resumes the pending photos.
+	os.Remove(filepath.Join(h.env.BlobDir, "sessions"))
+	resumed := h.run(false)
+	expect(t, resumed, 3, 0, 0)
+}
+
 func TestRunResumesPendingPhoto(t *testing.T) {
 	h := newHarness(t)
 	sum := h.run(false)
