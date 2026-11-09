@@ -73,7 +73,7 @@ func TestCreateSession(t *testing.T) {
 
 func TestRegisterPhoto(t *testing.T) {
 	ctx := context.Background()
-	svc, _ := newService(t)
+	svc, blobs := newService(t)
 	sid := mustSession(t, svc).ID
 
 	reg, err := svc.RegisterPhoto(ctx, sid, "DSC0001.ARW", hashA, false)
@@ -88,17 +88,31 @@ func TestRegisterPhoto(t *testing.T) {
 		t.Fatalf("unexpected uploads: %+v", reg.Uploads)
 	}
 
-	t.Run("duplicate", func(t *testing.T) {
+	t.Run("duplicate still pending gets uploads to resume", func(t *testing.T) {
 		dup, err := svc.RegisterPhoto(ctx, sid, "renamed.ARW", hashA, false)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if dup.Created || dup.Photo.ID != p.ID || dup.Uploads != nil {
+		if dup.Created || dup.Photo.ID != p.ID || dup.Uploads == nil {
 			t.Errorf("unexpected: %+v", dup)
 		}
 	})
 
-	t.Run("duplicate forced", func(t *testing.T) {
+	t.Run("duplicate ready", func(t *testing.T) {
+		blobs.objects[p.ThumbKey()], blobs.objects[p.PreviewKey()] = true, true
+		if _, err := svc.CompletePhoto(ctx, sid, p.ID); err != nil {
+			t.Fatal(err)
+		}
+		dup, err := svc.RegisterPhoto(ctx, sid, "renamed.ARW", hashA, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if dup.Created || dup.Photo.ID != p.ID || dup.Photo.Status != model.StatusReady || dup.Uploads != nil {
+			t.Errorf("unexpected: %+v", dup)
+		}
+	})
+
+	t.Run("duplicate ready forced", func(t *testing.T) {
 		forced, err := svc.RegisterPhoto(ctx, sid, "DSC0001.ARW", hashA, true)
 		if err != nil {
 			t.Fatal(err)

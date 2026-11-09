@@ -85,13 +85,16 @@ type PhotoRegistration struct {
 	Photo model.Photo
 	// Created is false if the session already had a photo with this hash.
 	Created bool
-	// Uploads is set for new photos, and for existing ones when forced.
+	// Uploads is set when the client should upload renditions: for new
+	// photos, existing photos still pending (resuming an interrupted
+	// upload), and any existing photo when forced.
 	Uploads *Uploads
 }
 
 // RegisterPhoto registers a raw file in a session, deduplicated by hash.
-// A new photo gets upload URLs. An existing photo is returned as-is, or with
-// fresh upload URLs (to overwrite its renditions) if force is set.
+// A new photo gets upload URLs. An existing ready photo is returned as-is,
+// or with fresh upload URLs (to overwrite its renditions) if force is set.
+// An existing pending photo always gets upload URLs so it can be finished.
 func (s *Service) RegisterPhoto(ctx context.Context, sessionID, filename, hash string, force bool) (PhotoRegistration, error) {
 	p, created, err := s.store.CreatePhoto(ctx, model.Photo{
 		ID:        model.NewID(),
@@ -109,7 +112,7 @@ func (s *Service) RegisterPhoto(ctx context.Context, sessionID, filename, hash s
 	}
 
 	reg := PhotoRegistration{Photo: p, Created: created}
-	if created || force {
+	if created || force || p.Status == model.StatusPending {
 		if reg.Uploads, err = s.presignUploads(ctx, p); err != nil {
 			return PhotoRegistration{}, err
 		}

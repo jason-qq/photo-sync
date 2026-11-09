@@ -61,8 +61,9 @@ type Session struct {
 //
 // Responses:
 //   - 201 PhotoResponse with UploadURLs: new photo.
-//   - 200 PhotoResponse: the session already has a photo with this Hash. With
-//     ?force=true, UploadURLs is included to overwrite its renditions.
+//   - 200 PhotoResponse: the session already has a photo with this Hash.
+//     UploadURLs is included if the photo is still pending (resume an
+//     interrupted upload) or with ?force=true (overwrite its renditions).
 //   - 400 invalid body; 404 session not found.
 type CreatePhotoRequest struct {
 	// Filename is the raw file's base name (no path separators),
