@@ -63,11 +63,17 @@ func TestPutRejected(t *testing.T) {
 
 	expiredURL, _ := l.PresignPut(ctx, "a/b.jpg", -time.Second)
 
+	// Flip the signature's last hex digit (always to a different value).
+	tamper := "0"
+	if strings.HasSuffix(good, "0") {
+		tamper = "1"
+	}
+
 	tests := []struct {
 		name string
 		url  string
 	}{
-		{"tampered signature", good[:len(good)-1] + "0"},
+		{"tampered signature", good[:len(good)-1] + tamper},
 		{"different key", strings.Replace(good, "a/b.jpg", "a/c.jpg", 1)},
 		{"extended expiry", strings.Replace(good, "exp=", "exp=9", 1)},
 		{"expired", expiredURL},
