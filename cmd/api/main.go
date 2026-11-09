@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"photo-sync/internal/blob"
+	"photo-sync/internal/review"
 	"photo-sync/internal/server"
 	"photo-sync/internal/store"
 )
@@ -46,11 +47,11 @@ func run() error {
 	rand.Read(secret)
 
 	blobs := blob.NewLocal(dataDir, baseURL, secret)
-	srv, err := server.New(server.Config{
-		Store:  store.NewMemory(),
-		Blobs:  blobs,
-		APIKey: apiKey,
-	})
+	svc, err := review.New(review.Config{Store: store.NewMemory(), Blobs: blobs})
+	if err != nil {
+		return err
+	}
+	srv, err := server.New(server.Config{Service: svc, APIKey: apiKey})
 	if err != nil {
 		return err
 	}

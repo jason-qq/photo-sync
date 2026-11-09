@@ -11,6 +11,7 @@ import (
 
 	"photo-sync/internal/api"
 	"photo-sync/internal/blob"
+	"photo-sync/internal/review"
 	"photo-sync/internal/store"
 )
 
@@ -30,7 +31,11 @@ func newEnv(t *testing.T) *env {
 	t.Cleanup(ts.Close)
 
 	blobs := blob.NewLocal(t.TempDir(), ts.URL, []byte("secret"))
-	srv, err := New(Config{Store: store.NewMemory(), Blobs: blobs, APIKey: testKey})
+	svc, err := review.New(review.Config{Store: store.NewMemory(), Blobs: blobs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := New(Config{Service: svc, APIKey: testKey})
 	if err != nil {
 		t.Fatal(err)
 	}
