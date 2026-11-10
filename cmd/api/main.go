@@ -1,22 +1,30 @@
-// Command api runs the photo review API and owner web UI as a local HTTP
-// server with disk-backed blob storage. Open the base URL in a browser and
-// sign in with the API key.
+// Command api runs the photo review API and owner web UI as an HTTP server.
+// Open the base URL in a browser and sign in with the API key.
 //
 // Sessions and photos are kept in memory (lost on restart) unless
-// PHOTOSYNC_DYNAMODB_TABLE is set.
+// PHOTOSYNC_DYNAMODB_TABLE is set. Preview images are stored on local disk
+// (served by this process under /dev/blob/) unless PHOTOSYNC_S3_BUCKET is
+// set.
 //
 // Environment:
 //
 //	PHOTOSYNC_API_KEY            owner API key (required)
 //	PHOTOSYNC_ADDR               listen address (default localhost:8080)
 //	PHOTOSYNC_BASE_URL           externally reachable origin (default http://<addr>)
-//	PHOTOSYNC_DATA_DIR           blob storage directory (default ./data)
+//	PHOTOSYNC_DATA_DIR           local blob directory (default ./data)
 //	PHOTOSYNC_DYNAMODB_TABLE     use this DynamoDB table instead of memory
 //	PHOTOSYNC_DYNAMODB_ENDPOINT  DynamoDB endpoint override, for DynamoDB Local
 //	                             (e.g. http://localhost:8000); the table is
 //	                             created if missing and dummy credentials are
-//	                             used. Unset: real AWS via the default
-//	                             credential chain (AWS_PROFILE, AWS_REGION, ...).
+//	                             used.
+//	PHOTOSYNC_S3_BUCKET          store images in this S3 bucket instead of disk
+//	PHOTOSYNC_S3_ENDPOINT        S3-compatible server instead of AWS (e.g.
+//	                             RustFS at http://localhost:9000); the bucket
+//	                             is created if missing. Credentials come from
+//	                             AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY.
+//
+// Without endpoint overrides, AWS is used via the default credential chain
+// (AWS_PROFILE, AWS_REGION, ...) and the table/bucket must already exist.
 package main
 
 import (
@@ -26,8 +34,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -58,16 +68,14 @@ func run() error {
 	baseURL := envOr("PHOTOSYNC_BASE_URL", "http://"+addr)
 	dataDir := envOr("PHOTOSYNC_DATA_DIR", "data")
 
-	// Upload URLs are signed with a per-process secret; they only need to
-	// outlive their 15-minute TTL, not a restart.
-	secret := make([]byte, 32)
-	rand.Read(secret)
-
 	st, err := openStore()
 	if err != nil {
 		return err
 	}
-	blobs := blob.NewLocal(dataDir, baseURL, secret)
+	blobs, err := openBlobs(dataDir, baseURL)
+	if err != nil {
+		return err
+	}
 	svc, err := review.New(review.Config{Store: st, Blobs: blobs})
 	if err != nil {
 		return err
@@ -76,13 +84,19 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// The UI's CSP must allow images from wherever the blob store's view
+	// URLs point (baseURL for Local, the bucket's host for S3).
+	imageOrigin, err := urlOrigin(blobs)
+	if err != nil {
+		return err
+	}
 
 	mux := http.NewServeMux()
 	mux.Handle("/api/", srv)
-	mux.Handle(blob.LocalPathPrefix+"{key...}", blobs)
-	// Images come from the blob URLs, which use baseURL; allow it in case
-	// the UI is opened via a different host name (e.g. 127.0.0.1).
-	mux.Handle("/", ui.Handler(ui.Config{ImageOrigins: []string{baseURL}}))
+	if local, ok := blobs.(*blob.Local); ok {
+		mux.Handle(blob.LocalPathPrefix+"{key...}", local)
+	}
+	mux.Handle("/", ui.Handler(ui.Config{ImageOrigins: []string{imageOrigin}}))
 
 	hs := &http.Server{
 		Addr:              addr,
@@ -124,9 +138,9 @@ func openStore() (store.Store, error) {
 
 	endpoint := os.Getenv("PHOTOSYNC_DYNAMODB_ENDPOINT")
 	if endpoint == "" {
-		cfg, err := config.LoadDefaultConfig(ctx)
+		cfg, err := awsConfig()
 		if err != nil {
-			return nil, fmt.Errorf("load AWS config: %w", err)
+			return nil, err
 		}
 		slog.Info("store: DynamoDB", "table", table, "region", cfg.Region)
 		return store.NewDynamo(dynamodb.NewFromConfig(cfg), table), nil
@@ -143,6 +157,64 @@ func openStore() (store.Store, error) {
 	}
 	slog.Info("store: DynamoDB Local", "table", table, "endpoint", endpoint)
 	return store.NewDynamo(db, table), nil
+}
+
+// openBlobs returns the blob store selected by the environment: S3 if
+// PHOTOSYNC_S3_BUCKET is set, local disk otherwise.
+func openBlobs(dataDir, baseURL string) (blob.Store, error) {
+	bucket := os.Getenv("PHOTOSYNC_S3_BUCKET")
+	if bucket == "" {
+		// Local URLs are signed with a per-process secret; they only need
+		// to outlive their TTL, not a restart.
+		secret := make([]byte, 32)
+		rand.Read(secret)
+		slog.Info("blobs: local disk", "dir", dataDir)
+		return blob.NewLocal(dataDir, baseURL, secret), nil
+	}
+
+	cfg, err := awsConfig()
+	if err != nil {
+		return nil, err
+	}
+	endpoint := os.Getenv("PHOTOSYNC_S3_ENDPOINT")
+	if endpoint != "" && cfg.Region == "" {
+		cfg.Region = "us-east-1" // local servers ignore it, but the SDK requires one
+	}
+	client := blob.NewS3Client(cfg, endpoint)
+	if endpoint != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := blob.CreateBucket(ctx, client, bucket); err != nil {
+			return nil, err
+		}
+	}
+	slog.Info("blobs: S3", "bucket", bucket, "endpoint", endpoint, "region", cfg.Region)
+	return blob.NewS3(client, bucket), nil
+}
+
+// awsConfig loads the default AWS configuration (credentials and region
+// from the environment, AWS_PROFILE, etc.) once, on first use.
+var awsConfig = sync.OnceValues(func() (aws.Config, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cfg, err := config.LoadDefaultConfig(ctx)
+	if err != nil {
+		return aws.Config{}, fmt.Errorf("load AWS config: %w", err)
+	}
+	return cfg, nil
+})
+
+// urlOrigin returns the scheme://host that blobs' view URLs point at.
+func urlOrigin(blobs blob.Store) (string, error) {
+	raw, err := blobs.PresignGet(context.Background(), "origin-probe.jpg", time.Minute)
+	if err != nil {
+		return "", err
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("parse blob URL: %w", err)
+	}
+	return u.Scheme + "://" + u.Host, nil
 }
 
 func envOr(key, def string) string {

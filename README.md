@@ -4,9 +4,9 @@ A small, self-hosted photo review app for photographers. You upload previews of 
 raw files, then share a link so the model can mark photos accept/reject/stars. **Raw files
 never leave your machine.** Only resized, metadata-stripped JPEG previews are uploaded.
 
-> **Status:** works end to end locally: uploader, API, owner web UI, and a DynamoDB store
-> (tested against DynamoDB Local). Not yet built: S3 storage, AWS deployment, reviewer
-> links and feedback.
+> **Status:** works end to end locally: uploader, API, owner web UI, plus DynamoDB and S3
+> storage (tested against local emulators in Docker). Not yet built: AWS deployment,
+> reviewer links and feedback.
 
 ## How it works
 
@@ -19,14 +19,15 @@ never leave your machine.** Only resized, metadata-stripped JPEG previews are up
 │  • hash raw          │ ◀── upload URLs ──── │ review service               │
 │  • make previews     │                      │   │                 │        │
 │  • strip EXIF        │  2. PUT JPEGs        │ store               blob     │
-│        │             │ ───────────────────▶ │ (memory/DynamoDB)  (disk*)   │
+│        │             │ ───────────────────▶ │ (memory/DynamoDB)  (disk/S3) │
 │  .review-manifest    │  3. complete         │                              │
 │     .json            │ ───────────────────▶ │                              │
 └──────────────────────┘                      └──────────────────────────────┘
                                                         ▲
                                     browser ────────────┘  sessions, photo grid, preview
 ```
-\* Local disk stands in for S3 until the S3 store is built.
+Step 2 goes straight to the blob storage (S3, or the API's own `/dev/blob/` in disk mode),
+not through the API code.
 
 1. The **uploader** hashes each raw file and registers it with the API. The API dedupes by
    hash within a session and, for new photos, returns short-lived signed upload URLs.
@@ -51,8 +52,9 @@ An HTTP server that owns all state. It:
   photo listing), authenticated with the owner API key (`Authorization: Bearer <key>`);
 - serves the **owner web UI** at `/`: sign in with the API key, browse sessions, view a
   session's thumbnail grid, open full-screen previews (← / → to navigate);
-- in local mode, serves **blob storage** under `/dev/blob/`: signed, expiring upload and
-  download URLs that mimic S3 presigned URLs.
+- in disk mode, serves **blob storage** under `/dev/blob/`: signed, expiring upload and
+  download URLs that mimic S3 presigned URLs. With S3 configured this route doesn't exist;
+  URLs point at the bucket instead.
 
 It is designed to run on AWS Lambda later. Locally it is a plain HTTP server.
 
@@ -73,7 +75,7 @@ Runs on the photographer's machine against one folder of raw files (Sony `.ARW`,
 | Data | Local / default | AWS |
 |---|---|---|
 | Sessions, photos | In memory (lost on restart) or DynamoDB Local | DynamoDB (single table, on-demand) |
-| Preview images | Local disk (`./data`) | S3, private bucket *(not built yet)* |
+| Preview images | Local disk (`./data`) or a local S3-compatible server | S3, private bucket |
 
 ### Internal packages
 
@@ -83,7 +85,7 @@ Runs on the photographer's machine against one folder of raw files (Sony `.ARW`,
 | `internal/server` | HTTP layer: routing, auth, JSON, mapping errors to status codes |
 | `internal/review` | Use cases and business rules (dedupe, upload confirmation, listing); no HTTP |
 | `internal/store` | Persistence interface with `Memory` and `Dynamo` implementations |
-| `internal/blob` | Object storage interface (presigned PUT/GET) with a disk-backed `Local` implementation |
+| `internal/blob` | Object storage interface (presigned PUT/GET) with `Local` (disk) and `S3` implementations |
 | `internal/model` | Domain types (`Session`, `Photo`) and ID generation (ULIDs) |
 | `internal/ui` | Owner web UI: static HTML/CSS/JS embedded into the binary |
 | `internal/uploader` | The uploader's pipeline: scan, hash, preview, upload, manifest |
@@ -97,7 +99,8 @@ Layering in the API: `server` → `review` → `store` / `blob`. Swapping memory
 
 ## Running locally
 
-**Prerequisites:** Go 1.27+. Docker is optional (only for DynamoDB Local).
+**Prerequisites:** Go 1.27+. Docker is optional (only for the local DynamoDB/S3
+emulators).
 
 Examples use PowerShell; in bash, write `VAR=value command` instead of `$env:VAR="value";`.
 
@@ -157,6 +160,25 @@ unprivileged user that couldn't create its database file there.)
 The uploader's manifest remembers the session ID, so if the API's data is wiped, delete
 `.review-manifest.json` from the folder to start a new session.
 
+### Running against S3 locally (RustFS)
+
+To exercise the S3 code path without AWS, run [RustFS](https://github.com/rustfs/rustfs),
+an S3-compatible server. (MinIO's images now require a registry login.)
+
+```powershell
+docker run --rm -p 9000:9000 -e RUSTFS_ACCESS_KEY=devkey -e RUSTFS_SECRET_KEY=devsecret123 rustfs/rustfs
+
+$env:PHOTOSYNC_API_KEY="devkey"
+$env:PHOTOSYNC_S3_BUCKET="photosync-previews"
+$env:PHOTOSYNC_S3_ENDPOINT="http://localhost:9000"
+$env:AWS_ACCESS_KEY_ID="devkey"
+$env:AWS_SECRET_ACCESS_KEY="devsecret123"
+go run ./cmd/api
+```
+
+The API creates the bucket on first start. Combine with the DynamoDB variables above to
+run the same storage stack as on AWS.
+
 ## Configuration
 
 ### API (`cmd/api`)
@@ -166,12 +188,14 @@ The uploader's manifest remembers the session ID, so if the API's data is wiped,
 | `PHOTOSYNC_API_KEY` | *(required)* | Owner API key for the CLI and web UI |
 | `PHOTOSYNC_ADDR` | `localhost:8080` | Listen address |
 | `PHOTOSYNC_BASE_URL` | `http://<addr>` | Externally reachable origin, used in signed image/upload URLs |
-| `PHOTOSYNC_DATA_DIR` | `data` | Where preview images are stored |
+| `PHOTOSYNC_DATA_DIR` | `data` | Where preview images are stored in disk mode |
 | `PHOTOSYNC_DYNAMODB_TABLE` | *(unset: memory)* | Use this DynamoDB table |
 | `PHOTOSYNC_DYNAMODB_ENDPOINT` | *(unset: AWS)* | DynamoDB Local endpoint; creates the table if missing and uses dummy credentials |
+| `PHOTOSYNC_S3_BUCKET` | *(unset: disk)* | Store preview images in this S3 bucket |
+| `PHOTOSYNC_S3_ENDPOINT` | *(unset: AWS)* | S3-compatible server; creates the bucket if missing. Credentials from `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` |
 
-With a table but no endpoint, the API uses real AWS through the standard credential chain
-(`AWS_PROFILE`, `AWS_REGION`, ...). The table must then already exist.
+Without an endpoint override, the API uses real AWS through the standard credential chain
+(`AWS_PROFILE`, `AWS_REGION`, ...), and the table and bucket must already exist.
 
 ### Uploader (`cmd/uploader`)
 
@@ -190,16 +214,23 @@ accident.
 go test ./...
 ```
 
-Runs everything that needs no external services. The store tests are one shared suite that
-both stores must pass; to include DynamoDB, run DynamoDB Local and point the tests at it:
+Runs everything that needs no external services. The store and blob packages each have
+one shared test suite that every implementation must pass. To include the AWS-backed
+implementations, run the local emulators and point the tests at them:
 
 ```powershell
 docker run --rm -d -p 8000:8000 amazon/dynamodb-local
+docker run --rm -d -p 9000:9000 -e RUSTFS_ACCESS_KEY=testkey -e RUSTFS_SECRET_KEY=testsecret123 rustfs/rustfs
+
 $env:PHOTOSYNC_DYNAMODB_TEST_ENDPOINT="http://localhost:8000"
-go test ./internal/store
+$env:PHOTOSYNC_S3_TEST_ENDPOINT="http://localhost:9000"
+$env:PHOTOSYNC_S3_TEST_ACCESS_KEY="testkey"
+$env:PHOTOSYNC_S3_TEST_SECRET_KEY="testsecret123"
+go test ./internal/store ./internal/blob
 ```
 
-Each test creates and deletes its own table. The tests refuse a real AWS endpoint.
+Each test creates and deletes its own table or bucket. The tests refuse a real AWS
+endpoint.
 
 The preview pipeline can also be checked against your own raw files:
 
@@ -213,8 +244,11 @@ go test ./internal/preview -run TestRealRaws -v
 - Raw files are never uploaded; previews are re-encoded, which strips all EXIF (including
   GPS).
 - Upload and image URLs are signed per object and HTTP method and expire (15 min for
-  uploads, 1 h for viewing). Request logs record paths only, never the signatures in query
-  strings.
+  uploads, 1 h for viewing). S3 upload URLs also sign `Content-Type: image/jpeg`. Request
+  logs record paths only, never the signatures in query strings.
+- The S3 bucket stays private; images are only reachable through those signed URLs. S3
+  upload URLs can't cap object size (disk mode caps at 25 MB), so a leaked upload URL could
+  store a large object until it expires.
 - The owner UI is served with a strict Content Security Policy, `no-referrer` and
   `noindex`, and never inserts user-supplied text as HTML.
 - The API key in the web UI is a local-development measure; a proper owner login is planned
@@ -222,7 +256,6 @@ go test ./internal/preview -run TestRealRaws -v
 
 ## Roadmap
 
-1. S3 blob store
-2. AWS deployment (Lambda + API Gateway, DynamoDB, S3)
-3. Reviewer links (expiring capability URLs), reviewer UI, accept/reject/stars/comments
-4. Export of keepers (filename list) and, later, writing ratings back to raw metadata
+1. AWS deployment (Lambda + API Gateway, DynamoDB, S3)
+2. Reviewer links (expiring capability URLs), reviewer UI, accept/reject/stars/comments
+3. Export of keepers (filename list) and, later, writing ratings back to raw metadata
