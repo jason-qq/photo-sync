@@ -169,6 +169,7 @@ Resources:
                 - dynamodb:GetItem
                 - dynamodb:PutItem
                 - dynamodb:UpdateItem
+                - dynamodb:DeleteItem # feedback undo / clearing every field
                 - dynamodb:Query
                 - dynamodb:ConditionCheckItem
               Resource:

@@ -4,9 +4,10 @@ A small, self-hosted photo review app for photographers. You upload previews of 
 raw files, then share a link so the model can mark photos accept/reject/stars. **Raw files
 never leave your machine.** Only resized, metadata-stripped JPEG previews are uploaded.
 
-> **Status:** works end to end locally: uploader, API, owner web UI, plus DynamoDB and S3
-> storage (tested against local emulators in Docker). AWS deployment (Lambda + API
-> Gateway) is scripted with SAM. Not yet built: reviewer links and feedback.
+> **Status:** complete review loop: upload, owner UI, expiring reviewer links, a reviewer
+> page in English and Japanese with accept/reject, stars and comments, and the owner's
+> view of all feedback. Runs locally (with optional DynamoDB/S3 emulators) or on AWS
+> (Lambda + API Gateway, deployed with SAM).
 
 ## How it works
 
@@ -38,6 +39,10 @@ not through the API code.
    `ready`.
 4. The **owner UI** lists sessions and shows each session's photos using short-lived signed
    image URLs.
+5. The owner creates an expiring **review link** for the model, `https://…/r#<token>`, and
+   sends it. The reviewer page lets them accept/reject, star and comment on each photo;
+   everything saves automatically. The owner sees each reviewer's feedback and progress,
+   can filter by verdict and stars, and can copy the matching filenames.
 
 ## Components
 
@@ -48,10 +53,16 @@ packages under `internal/`.
 
 An HTTP server that owns all state. It:
 
-- serves the **JSON API** under `/api/` (sessions, photo registration, upload completion,
-  photo listing), authenticated with the owner API key (`Authorization: Bearer <key>`);
-- serves the **owner web UI** at `/`: sign in with the API key, browse sessions, view a
-  session's thumbnail grid, open full-screen previews (← / → to navigate);
+- serves the **JSON API** under `/api/`: owner routes (sessions, photo registration,
+  upload completion, photo listing with feedback, reviewer links) authenticated with the
+  owner API key (`Authorization: Bearer <key>`) or the owner's browser session cookie, and
+  reviewer routes under `/api/review` authenticated with a reviewer session cookie;
+- serves the **owner web UI** at `/`: sign in with the API key, browse sessions, manage
+  review links, view each session's photos with everyone's feedback, filter by verdict and
+  stars, open full-screen previews (← / → to navigate);
+- serves the **reviewer page** at `/r`: opened from a review link; English or Japanese
+  (auto-detected, switchable); accept/reject, 1–5 stars and a comment per photo, saved
+  automatically;
 - in disk mode, serves **blob storage** under `/dev/blob/`: signed, expiring upload and
   download URLs that mimic S3 presigned URLs. With S3 configured this route doesn't exist;
   URLs point at the bucket instead.
@@ -75,7 +86,7 @@ Runs on the photographer's machine against one folder of raw files (Sony `.ARW`,
 
 | Data | Local / default | AWS |
 |---|---|---|
-| Sessions, photos | In memory (lost on restart) or DynamoDB Local | DynamoDB (single table, on-demand) |
+| Sessions, photos, reviewers, feedback | In memory (lost on restart) or DynamoDB Local | DynamoDB (single table, on-demand) |
 | Preview images | Local disk (`./data`) or a local S3-compatible server | S3, private bucket |
 
 ### Internal packages
@@ -85,11 +96,11 @@ Runs on the photographer's machine against one folder of raw files (Sony `.ARW`,
 | `internal/app` | Composition root: builds the whole HTTP app (API, UI, local blob route) from a store and blob store |
 | `internal/api` | Wire contract shared by server and clients: routes, request/response types, validation |
 | `internal/server` | HTTP layer: routing, auth, JSON, mapping errors to status codes |
-| `internal/review` | Use cases and business rules (dedupe, upload confirmation, listing); no HTTP |
+| `internal/review` | Use cases and business rules (dedupe, upload confirmation, reviewer links, feedback); no HTTP |
 | `internal/store` | Persistence interface with `Memory` and `Dynamo` implementations |
 | `internal/blob` | Object storage interface (presigned PUT/GET) with `Local` (disk) and `S3` implementations |
-| `internal/model` | Domain types (`Session`, `Photo`) and ID generation (ULIDs) |
-| `internal/ui` | Owner web UI: static HTML/CSS/JS embedded into the binary |
+| `internal/model` | Domain types (`Session`, `Photo`, `Reviewer`, `Feedback`) and ID generation (ULIDs) |
+| `internal/ui` | Owner UI (`/`) and reviewer page (`/r`): static HTML/CSS/JS embedded into the binary |
 | `internal/lambdahttp` | Runs an `http.Handler` on Lambda: translates API Gateway events to HTTP requests and back |
 | `internal/uploader` | The uploader's pipeline: scan, hash, preview, upload, manifest |
 | `internal/apiclient` | Go client for the API, used by the uploader |
@@ -140,6 +151,21 @@ current Chrome, Edge or Firefox: the cookie is `Secure`, which those browsers al
 `http://localhost`.
 
 Unless `PHOTOSYNC_SESSION_SECRET` is set, restarting the API signs you out.
+
+### 4. Send a review link
+
+Open a session, enter the reviewer's name under **Reviewers**, choose how long the link
+stays valid and click **Create link**. Copy the link straight away: it's shown once (only
+a hash of it is stored). **Extend** pushes the expiry out; **Revoke** disables it
+immediately and permanently (their feedback is kept).
+
+The reviewer opens the link, which signs them in with a cookie of their own; reopening
+the page later works while the link is valid. To try it locally, open the link in a
+private window so the owner and reviewer cookies don't mix.
+
+Back on the session page you'll see each reviewer's verdicts, stars and comments, their
+progress, and a filter by verdict and minimum stars. **Copy filenames** copies the
+filtered filenames one per line, e.g. to select keepers in Lightroom or Capture One.
 
 ### Keeping data across restarts (DynamoDB Local)
 
@@ -341,8 +367,17 @@ go test ./internal/preview -run TestRealRaws -v
   out.
 - Cross-site requests that would change state (e.g. a form on another site posting to
   the API) are rejected using Go's `http.CrossOriginProtection`.
+- Review links carry a 256-bit random token in the URL **fragment** (`/r#<token>`), which
+  browsers never send to the server, so it can't appear in access logs or `Referer`
+  headers. The page exchanges it once for a reviewer cookie and removes it from the
+  address bar and history. Only the token's SHA-256 is stored.
+- Every reviewer request re-checks the link, so expiry and revocation apply immediately.
+  A reviewer sees only their session's ready photos and their own feedback, never
+  filenames, hashes or other reviewers' feedback. The reviewer page has no link-preview
+  metadata, so messaging apps don't show photos when the link is shared.
 
 ## Roadmap
 
-1. Reviewer links (expiring capability URLs), reviewer UI, accept/reject/stars/comments
-2. Export of keepers (filename list) and, later, writing ratings back to raw metadata
+1. Writing ratings back to raw metadata (XMP) via the manifest
+2. Export as CSV (UTF-8 with BOM for Excel), deleting sessions and photos
+3. Per-folder "shoot mode" in the uploader (one session per model subfolder)
