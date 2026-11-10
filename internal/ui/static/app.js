@@ -60,7 +60,7 @@ function h(tag, attrs = {}, ...children) {
 }
 
 function render(...nodes) {
-  app.replaceChildren(...nodes);
+  app.replaceChildren(...nodes.filter((n) => n != null)); // null would render as "null"
 }
 
 function plural(n, word) {
@@ -121,9 +121,10 @@ async function showSessions() {
 
 async function showSession(sid) {
   const enc = encodeURIComponent(sid);
-  const [{ sessions }, { photos }] = await Promise.all([
+  const [{ sessions }, { photos }, { reviewers }] = await Promise.all([
     api("/api/sessions"),
     api(`/api/sessions/${enc}/photos`),
+    api(`/api/sessions/${enc}/reviewers`),
   ]);
   const session = sessions.find((s) => s.id === sid);
   const loadedAt = Date.now();
@@ -147,10 +148,128 @@ async function showSession(sid) {
     h("p", {}, h("a", { href: "#/" }, "← Sessions")),
     h("h1", {}, session ? session.title : "Session"),
     h("p", { class: "subhead muted" }, [session?.date, ...summary].filter(Boolean).join(" · ")),
+    reviewersPanel(sid, reviewers),
     photos.length === 0
       ? h("p", { class: "muted" }, "No photos in this session yet.")
       : h("div", { class: "grid" }, ...photos.map((p) => tile(p, ready, onImageError))),
   );
+}
+
+// --- Reviewers panel ---
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const MAX_LINK_DAYS = 90; // server limit (review.MaxReviewerTTL)
+
+function formatDate(iso) {
+  return new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
+// reviewersPanel lists a session's reviewer links and lets the owner
+// create, extend and revoke them. It re-renders itself in place after each
+// change so the rest of the page (and a freshly created link) stays put.
+function reviewersPanel(sid, initial) {
+  const base = `/api/sessions/${encodeURIComponent(sid)}/reviewers`;
+  const panel = h("section", { class: "panel", "aria-labelledby": "reviewers-heading" });
+  let reviewers = initial;
+  let newLink = null; // {name, url}: shown until the page is left
+  let error = "";
+
+  async function act(fn) {
+    error = "";
+    try {
+      await fn();
+      ({ reviewers } = await api(base));
+    } catch (err) {
+      if (err instanceof Unauthorized) return route();
+      error = err.message;
+    }
+    draw();
+  }
+
+  function create(name, days) {
+    return act(async () => {
+      const expiresAt = new Date(Date.now() + days * DAY_MS).toISOString();
+      const res = await request("POST", base, { name, expiresAt });
+      newLink = { name: res.reviewer.name, url: location.origin + res.linkPath };
+    });
+  }
+
+  function extend(r) {
+    // A week past whichever is later, now or the current expiry, within
+    // the server's limit.
+    const from = Math.max(Date.now(), Date.parse(r.expiresAt));
+    const until = Math.min(from + 7 * DAY_MS, Date.now() + MAX_LINK_DAYS * DAY_MS - 60 * 1000);
+    return act(() => request("PATCH", `${base}/${encodeURIComponent(r.id)}`, { expiresAt: new Date(until).toISOString() }));
+  }
+
+  function revoke(r) {
+    if (!confirm(`Revoke ${r.name}'s link? It stops working immediately and can't be re-enabled.`)) return;
+    return act(() => request("DELETE", `${base}/${encodeURIComponent(r.id)}`));
+  }
+
+  function status(r) {
+    if (r.revoked) return h("span", { class: "badge revoked" }, "Revoked");
+    if (!r.active) return h("span", { class: "badge expired" }, "Expired " + formatDate(r.expiresAt));
+    return h("span", { class: "badge active" }, "Active until " + formatDate(r.expiresAt));
+  }
+
+  function row(r) {
+    return h("li", { class: "reviewer" },
+      h("span", { class: "reviewer-name" }, r.name),
+      status(r),
+      h("span", { class: "reviewer-actions" },
+        r.revoked ? null : h("button", { type: "button", onclick: () => extend(r) }, "Extend 7 days"),
+        r.revoked ? null : h("button", { type: "button", class: "danger", onclick: () => revoke(r) }, "Revoke"),
+      ),
+    );
+  }
+
+  function linkBox() {
+    const field = h("input", { type: "text", readonly: true, value: newLink.url, "aria-label": "Review link" });
+    const copy = h("button", { type: "button" }, "Copy");
+    copy.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(newLink.url);
+        copy.textContent = "Copied";
+      } catch {
+        field.select(); // clipboard blocked: let the owner copy by hand
+      }
+    });
+    return h("div", { class: "link-box", role: "status" },
+      h("p", {}, `Link for ${newLink.name}. Copy it now: it can't be shown again.`),
+      h("div", { class: "link-row" }, field, copy),
+    );
+  }
+
+  function form() {
+    const name = h("input", { type: "text", name: "name", required: true, maxlength: "100", placeholder: "Reviewer name", "aria-label": "Reviewer name" });
+    const days = h("select", { name: "days", "aria-label": "Link valid for" },
+      ...[3, 7, 14, 30].map((d) => h("option", { value: String(d), selected: d === 7 }, `${d} days`)));
+    const f = h("form", { class: "reviewer-form" }, name, days, h("button", { type: "submit" }, "Create link"));
+    f.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const n = name.value.trim();
+      if (n) create(n, Number(days.value));
+    });
+    return f;
+  }
+
+  function draw() {
+    // replaceChildren (unlike h) would render null as the text "null",
+    // so optional parts are filtered out first.
+    panel.replaceChildren(...[
+      h("h2", { id: "reviewers-heading" }, "Reviewers"),
+      reviewers.length === 0
+        ? h("p", { class: "muted" }, "No review links yet.")
+        : h("ul", { class: "reviewers" }, ...reviewers.map(row)),
+      newLink ? linkBox() : null,
+      error ? h("p", { class: "error", role: "alert" }, error) : null,
+      form(),
+    ].filter((n) => n != null));
+  }
+
+  draw();
+  return panel;
 }
 
 function tile(photo, ready, onImageError) {

@@ -86,6 +86,10 @@ func (s *Server) routes() {
 	s.mux.Handle(api.RouteCreatePhoto, s.requireOwner(s.handle(s.createPhoto)))
 	s.mux.Handle(api.RouteListPhotos, s.requireOwner(s.handle(s.listPhotos)))
 	s.mux.Handle(api.RouteCompletePhoto, s.requireOwner(s.handle(s.completePhoto)))
+	s.mux.Handle(api.RouteCreateReviewer, s.requireOwner(s.handle(s.createReviewer)))
+	s.mux.Handle(api.RouteListReviewers, s.requireOwner(s.handle(s.listReviewers)))
+	s.mux.Handle(api.RouteExtendReviewer, s.requireOwner(s.handle(s.extendReviewer)))
+	s.mux.Handle(api.RouteRevokeReviewer, s.requireOwner(s.handle(s.revokeReviewer)))
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -171,9 +175,12 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, he.status, he.msg)
 	case errors.As(err, &ve):
 		writeError(w, http.StatusBadRequest, ve.Error())
-	case errors.Is(err, review.ErrSessionNotFound), errors.Is(err, review.ErrPhotoNotFound):
+	case errors.Is(err, review.ErrInvalidExpiry):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, review.ErrSessionNotFound), errors.Is(err, review.ErrPhotoNotFound),
+		errors.Is(err, review.ErrReviewerNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
-	case errors.Is(err, review.ErrNotUploaded):
+	case errors.Is(err, review.ErrNotUploaded), errors.Is(err, review.ErrReviewerRevoked):
 		writeError(w, http.StatusConflict, err.Error())
 	default:
 		s.log.Error("request failed", "method", r.Method, "path", r.URL.Path, "err", err)

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"photo-sync/internal/api"
 	"photo-sync/internal/server"
@@ -136,6 +137,103 @@ func TestBrowserLogin(t *testing.T) {
 	resp = e.send("POST", "/api/logout", "", "", c)
 	if gone := sessionCookieFrom(resp); resp.StatusCode != http.StatusNoContent || gone == nil || gone.MaxAge >= 0 {
 		t.Errorf("logout: %d, cookie %+v (want deletion)", resp.StatusCode, gone)
+	}
+}
+
+func TestReviewerManagement(t *testing.T) {
+	e := newEnv(t)
+	sid := e.createSession()
+	reviewers := api.ReviewersPath(sid)
+
+	// Create: 201, name trimmed, link token in the fragment.
+	var created api.CreateReviewerResponse
+	if code := e.call("POST", reviewers, map[string]any{"name": "  山田 花子 "}, &created); code != http.StatusCreated {
+		t.Fatalf("create: %d", code)
+	}
+	rv := created.Reviewer
+	if rv.Name != "山田 花子" || !rv.Active || rv.Revoked || rv.ID == "" {
+		t.Errorf("created reviewer: %+v", rv)
+	}
+	token, ok := strings.CutPrefix(created.LinkPath, "/r#")
+	if !ok || len(token) != 43 {
+		t.Errorf("linkPath %q: want /r#<43-char token>", created.LinkPath)
+	}
+
+	// List: the reviewer, without the token (decoded raw to check that).
+	var raw json.RawMessage
+	e.call("GET", reviewers, nil, &raw)
+	var list api.ListReviewersResponse
+	json.Unmarshal(raw, &list)
+	if len(list.Reviewers) != 1 || list.Reviewers[0].ID != rv.ID {
+		t.Fatalf("list: %s", raw)
+	}
+	if strings.Contains(string(raw), token) {
+		t.Error("list exposes the token")
+	}
+
+	// Extend.
+	one := api.ReviewerPath(sid, rv.ID)
+	newExp := time.Now().Add(30 * 24 * time.Hour).UTC().Truncate(time.Second)
+	var extended api.Reviewer
+	if code := e.call("PATCH", one, map[string]any{"expiresAt": newExp}, &extended); code != http.StatusOK || !extended.ExpiresAt.Equal(newExp) {
+		t.Errorf("extend: %d %+v", code, extended)
+	}
+
+	// Revoke (idempotent), then extending is a conflict.
+	for range 2 {
+		var revoked api.Reviewer
+		if code := e.call("DELETE", one, nil, &revoked); code != http.StatusOK || !revoked.Revoked || revoked.Active {
+			t.Errorf("revoke: %d %+v", code, revoked)
+		}
+	}
+	if code := e.call("PATCH", one, map[string]any{"expiresAt": newExp}, nil); code != http.StatusConflict {
+		t.Errorf("extend revoked: %d, want 409", code)
+	}
+}
+
+func TestReviewerValidation(t *testing.T) {
+	e := newEnv(t)
+	sid := e.createSession()
+	reviewers := api.ReviewersPath(sid)
+	var created api.CreateReviewerResponse
+	e.call("POST", reviewers, map[string]any{"name": "A"}, &created)
+	one := api.ReviewerPath(sid, created.Reviewer.ID)
+
+	future := time.Now().Add(24 * time.Hour)
+	tests := []struct {
+		name, method, path string
+		body               any
+		want               int
+	}{
+		{"missing name", "POST", reviewers, map[string]any{}, 400},
+		{"blank name", "POST", reviewers, map[string]any{"name": "  "}, 400},
+		// Limits count characters: 100 kana are 300 bytes but allowed.
+		{"100 Japanese chars", "POST", reviewers, map[string]any{"name": strings.Repeat("あ", 100)}, 201},
+		{"101 Japanese chars", "POST", reviewers, map[string]any{"name": strings.Repeat("あ", 101)}, 400},
+		{"expiry in past", "POST", reviewers, map[string]any{"name": "A", "expiresAt": time.Now().Add(-time.Hour)}, 400},
+		{"expiry too far", "POST", reviewers, map[string]any{"name": "A", "expiresAt": time.Now().Add(100 * 24 * time.Hour)}, 400},
+		{"explicit expiry", "POST", reviewers, map[string]any{"name": "A", "expiresAt": future}, 201},
+		{"unknown session", "POST", api.ReviewersPath("nope"), map[string]any{"name": "A"}, 404},
+		{"list unknown session", "GET", api.ReviewersPath("nope"), nil, 404},
+		{"extend missing expiry", "PATCH", one, map[string]any{}, 400},
+		{"extend unknown", "PATCH", api.ReviewerPath(sid, "nope"), map[string]any{"expiresAt": future}, 404},
+		{"revoke unknown", "DELETE", api.ReviewerPath(sid, "nope"), nil, 404},
+		{"revoke via other session", "DELETE", api.ReviewerPath(e.createSession(), created.Reviewer.ID), nil, 404},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var resp map[string]any
+			if code := e.call(tt.method, tt.path, tt.body, &resp); code != tt.want {
+				t.Errorf("status %d, want %d (%v)", code, tt.want, resp)
+			}
+		})
+	}
+
+	// All four routes require the owner.
+	for _, rt := range [][2]string{{"POST", reviewers}, {"GET", reviewers}, {"PATCH", one}, {"DELETE", one}} {
+		if code := e.do(rt[0], rt[1], "", map[string]any{"name": "A"}, nil); code != http.StatusUnauthorized {
+			t.Errorf("%s %s without key: %d, want 401", rt[0], rt[1], code)
+		}
 	}
 }
 
