@@ -82,8 +82,19 @@ func (s *Service) CreateReviewer(ctx context.Context, sessionID, name string, ex
 	return ReviewerLink{Reviewer: r, Token: token}, nil
 }
 
-// ListReviewers returns a session's reviewers, oldest first.
-func (s *Service) ListReviewers(ctx context.Context, sessionID string) ([]model.Reviewer, error) {
+// ReviewerSummary is a reviewer with their progress, as the owner sees it.
+type ReviewerSummary struct {
+	Reviewer model.Reviewer
+	// Reviewed is how many photos the reviewer has given any feedback.
+	Reviewed int
+	// LastActivity is when they last saved feedback; zero if never.
+	LastActivity time.Time
+}
+
+// ListReviewers returns a session's reviewers, oldest first, with their
+// progress. Progress is computed from the feedback on each call (no
+// counters to keep in sync); one query covers all reviewers.
+func (s *Service) ListReviewers(ctx context.Context, sessionID string) ([]ReviewerSummary, error) {
 	rs, err := s.store.ListReviewers(ctx, sessionID)
 	if errors.Is(err, store.ErrNotFound) {
 		return nil, ErrSessionNotFound
@@ -91,7 +102,29 @@ func (s *Service) ListReviewers(ctx context.Context, sessionID string) ([]model.
 	if err != nil {
 		return nil, fmt.Errorf("list reviewers: %w", err)
 	}
-	return rs, nil
+	fs, err := s.store.ListSessionFeedback(ctx, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("list feedback: %w", err)
+	}
+	type progress struct {
+		n    int
+		last time.Time
+	}
+	byReviewer := map[string]progress{}
+	for _, f := range fs {
+		p := byReviewer[f.ReviewerID]
+		p.n++
+		if f.UpdatedAt.After(p.last) {
+			p.last = f.UpdatedAt
+		}
+		byReviewer[f.ReviewerID] = p
+	}
+	out := make([]ReviewerSummary, len(rs))
+	for i, r := range rs {
+		p := byReviewer[r.ID]
+		out[i] = ReviewerSummary{Reviewer: r, Reviewed: p.n, LastActivity: p.last}
+	}
+	return out, nil
 }
 
 // ExtendReviewer sets a new expiry, which also revives an expired link.

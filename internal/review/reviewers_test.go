@@ -60,7 +60,7 @@ func TestCreateReviewer(t *testing.T) {
 	}
 
 	rs, err := svc.ListReviewers(ctx, sid)
-	if err != nil || len(rs) != 3 || rs[0].ID != r.ID {
+	if err != nil || len(rs) != 3 || rs[0].Reviewer.ID != r.ID {
 		t.Errorf("ListReviewers = %d reviewers, %v", len(rs), err)
 	}
 }
@@ -185,7 +185,7 @@ func TestExtendAndRevoke(t *testing.T) {
 	if err != nil || !r.ExpiresAt.Equal(newExp) {
 		t.Fatalf("extend: %+v, %v", r, err)
 	}
-	if rs, _ := svc.ListReviewers(ctx, sid); !rs[0].ExpiresAt.Equal(newExp) {
+	if rs, _ := svc.ListReviewers(ctx, sid); !rs[0].Reviewer.ExpiresAt.Equal(newExp) {
 		t.Error("extension not persisted")
 	}
 	if _, err := svc.ExtendReviewer(ctx, sid, rid, fixedNow.Add(-time.Hour)); !errors.Is(err, ErrInvalidExpiry) {

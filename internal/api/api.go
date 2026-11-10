@@ -142,6 +142,16 @@ type Photo struct {
 	CreatedAt time.Time   `json:"createdAt"`
 	// Images is present only when Status is ready.
 	Images *ImageURLs `json:"images,omitempty"`
+	// Feedback holds each reviewer's feedback on this photo, ordered by
+	// reviewer. Reviewers without feedback have no entry. Never null.
+	Feedback []ReviewerFeedback `json:"feedback"`
+}
+
+// ReviewerFeedback is one reviewer's feedback on a photo, as the owner sees
+// it. ReviewerID matches Reviewer.ID from GET /api/sessions/{sid}/reviewers.
+type ReviewerFeedback struct {
+	ReviewerID string `json:"reviewerId"`
+	Feedback
 }
 
 // ImageURLs are presigned URLs for viewing a photo's renditions via HTTP

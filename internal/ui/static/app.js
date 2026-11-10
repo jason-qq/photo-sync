@@ -95,6 +95,7 @@ async function showSession(sid) {
   const loadedAt = Date.now();
   const ready = photos.filter((p) => p.images);
   const pending = photos.length - ready.length;
+  reviewerNames = new Map(reviewers.map((r) => [r.id, r.name]));
 
   // Expired image URLs fail to load; reload the list to get fresh ones.
   // Only once per load, so a genuinely missing image can't loop.
@@ -113,10 +114,150 @@ async function showSession(sid) {
     h("p", {}, h("a", { href: "#/" }, "← Sessions")),
     h("h1", {}, session ? session.title : "Session"),
     h("p", { class: "subhead muted" }, [session?.date, ...summary].filter(Boolean).join(" · ")),
-    reviewersPanel(sid, reviewers),
+    reviewersPanel(sid, reviewers, ready.length),
     photos.length === 0
       ? h("p", { class: "muted" }, "No photos in this session yet.")
-      : h("div", { class: "grid" }, ...photos.map((p) => tile(p, ready, onImageError))),
+      : photosSection(sid, photos, onImageError),
+  );
+}
+
+// --- Feedback display ---
+
+// reviewerNames maps reviewer IDs to names for the session on screen.
+let reviewerNames = new Map();
+
+function nameOf(id) {
+  return reviewerNames.get(id) || "Reviewer";
+}
+
+// Comments are often Japanese while this page is English; marking them
+// lang="ja" makes browsers use Japanese glyph forms for kanji.
+const JAPANESE = /[぀-ヿ㐀-鿿]/;
+function langOf(text) {
+  return JAPANESE.test(text) ? "ja" : null;
+}
+
+function starsText(n) {
+  return "★".repeat(n);
+}
+
+// verdictClass summarizes a photo's verdicts for its tile outline: only
+// when reviewers agree (any accept and no reject, or the reverse).
+function verdictClass(feedback) {
+  const accepted = feedback.some((f) => f.verdict === "accept");
+  const rejected = feedback.some((f) => f.verdict === "reject");
+  if (accepted && !rejected) return "accepted";
+  if (rejected && !accepted) return "rejected";
+  return null;
+}
+
+// feedbackChips is the per-reviewer summary under a tile. Names are shown
+// only when there's more than one reviewer.
+function feedbackChips(feedback) {
+  const named = reviewerNames.size > 1;
+  return h("div", { class: "tile-feedback" },
+    ...feedback.map((f) => h("span", { class: "chip", title: f.comment || "" },
+      named ? h("span", {}, nameOf(f.reviewerId)) : null,
+      f.verdict === "accept" ? h("span", { class: "yes", "aria-label": "accepted" }, "✓") : null,
+      f.verdict === "reject" ? h("span", { class: "no", "aria-label": "rejected" }, "✗") : null,
+      f.stars ? h("span", { class: "stars-text", "aria-label": `${f.stars} stars` }, starsText(f.stars)) : null,
+      f.comment ? h("span", { "aria-label": "has comment" }, "💬") : null,
+    )),
+  );
+}
+
+// renderFeedbackPanel shows everyone's feedback on the photo in the viewer.
+const feedbackPanel = document.getElementById("viewer-feedback");
+function renderFeedbackPanel(photo) {
+  if (!photo.feedback || photo.feedback.length === 0) {
+    fill(feedbackPanel, h("p", { class: "muted" }, "No feedback yet."));
+    return;
+  }
+  fill(feedbackPanel, ...photo.feedback.map((f) => h("div", { class: "fb-entry" },
+    h("header", {},
+      h("strong", {}, nameOf(f.reviewerId)),
+      f.verdict === "accept" ? h("span", { class: "badge active" }, "Accepted") : null,
+      f.verdict === "reject" ? h("span", { class: "badge revoked" }, "Rejected") : null,
+      f.stars ? h("span", { class: "stars-text", "aria-label": `${f.stars} of 5 stars` }, starsText(f.stars)) : null,
+      h("span", { class: "muted" }, formatDate(f.updatedAt)),
+    ),
+    f.comment ? h("p", { class: "fb-comment", lang: langOf(f.comment) }, f.comment) : null,
+  )));
+}
+
+// --- Photos: filter and grid ---
+
+// Filter settings per session, kept across re-renders (e.g. the reload
+// that refreshes expired image URLs) for as long as the page is open.
+const filters = new Map(); // session ID -> {verdict, minStars}
+
+// photosSection is the filter bar plus the grid. Filtering is client-side
+// over the loaded photos; the viewer pages through what's visible.
+function photosSection(sid, photos, onImageError) {
+  if (!filters.has(sid)) filters.set(sid, { verdict: "all", minStars: 0 });
+  const filter = filters.get(sid);
+  const grid = h("div", { class: "grid" });
+  const count = h("span", { class: "count muted" });
+  const copy = h("button", { type: "button" });
+
+  // With several reviewers, a photo matches if any reviewer's feedback
+  // does ("accepted" = someone accepted it).
+  function matches(p) {
+    const fb = p.feedback || [];
+    const filtering = filter.verdict !== "all" || filter.minStars > 0;
+    if (filtering && !p.images) return false; // pending photos can't have feedback
+    switch (filter.verdict) {
+      case "accepted": if (!fb.some((f) => f.verdict === "accept")) return false; break;
+      case "rejected": if (!fb.some((f) => f.verdict === "reject")) return false; break;
+      case "unreviewed": if (fb.length > 0) return false; break;
+    }
+    return filter.minStars === 0 || fb.some((f) => (f.stars || 0) >= filter.minStars);
+  }
+
+  function draw() {
+    const visible = photos.filter(matches);
+    const viewable = visible.filter((p) => p.images);
+    fill(grid, ...visible.map((p) => tile(p, viewable, onImageError)));
+    count.textContent = visible.length === photos.length
+      ? `${photos.length} photos`
+      : `Showing ${visible.length} of ${photos.length}`;
+    copy.textContent = `Copy filenames (${visible.length})`;
+    copy.disabled = visible.length === 0;
+    copy.onclick = async () => {
+      // One per line: paste into Lightroom/Capture One to select keepers.
+      try {
+        await navigator.clipboard.writeText(visible.map((p) => p.filename).join("\n"));
+        copy.textContent = "Copied";
+      } catch {
+        copy.textContent = "Copy failed";
+      }
+    };
+  }
+
+  const verdictSelect = h("select", { "aria-label": "Verdict" },
+    h("option", { value: "all" }, "All"),
+    h("option", { value: "accepted" }, "Accepted"),
+    h("option", { value: "rejected" }, "Rejected"),
+    h("option", { value: "unreviewed" }, "Unreviewed"),
+  );
+  verdictSelect.value = filter.verdict;
+  verdictSelect.addEventListener("change", () => { filter.verdict = verdictSelect.value; draw(); });
+  const starsSelect = h("select", { "aria-label": "Minimum stars" },
+    h("option", { value: "0" }, "Any"),
+    ...[1, 2, 3, 4, 5].map((n) => h("option", { value: String(n) }, `${starsText(n)} or more`)),
+  );
+  starsSelect.value = String(filter.minStars);
+  starsSelect.addEventListener("change", () => { filter.minStars = Number(starsSelect.value); draw(); });
+
+  draw();
+  return h("section", { "aria-label": "Photos" },
+    h("div", { class: "filters" },
+      h("label", {}, "Verdict", verdictSelect),
+      h("label", {}, "Stars", starsSelect),
+      copy,
+      count,
+    ),
+    grid,
   );
 }
 
@@ -132,7 +273,7 @@ function formatDate(iso) {
 // reviewersPanel lists a session's reviewer links and lets the owner
 // create, extend and revoke them. It re-renders itself in place after each
 // change so the rest of the page (and a freshly created link) stays put.
-function reviewersPanel(sid, initial) {
+function reviewersPanel(sid, initial, photoCount) {
   const base = `/api/sessions/${encodeURIComponent(sid)}/reviewers`;
   const panel = h("section", { class: "panel", "aria-labelledby": "reviewers-heading" });
   let reviewers = initial;
@@ -178,10 +319,18 @@ function reviewersPanel(sid, initial) {
     return h("span", { class: "badge active" }, "Active until " + formatDate(r.expiresAt));
   }
 
+  function progress(r) {
+    const n = r.reviewed || 0;
+    const text = `Reviewed ${n} of ${photoCount}` +
+      (r.lastActivity ? ` · last active ${formatDate(r.lastActivity)}` : "");
+    return h("span", { class: "muted" }, text);
+  }
+
   function row(r) {
     return h("li", { class: "reviewer" },
       h("span", { class: "reviewer-name" }, r.name),
       status(r),
+      progress(r),
       h("span", { class: "reviewer-actions" },
         r.revoked ? null : h("button", { type: "button", onclick: () => extend(r) }, "Extend 7 days"),
         r.revoked ? null : h("button", { type: "button", class: "danger", onclick: () => revoke(r) }, "Revoke"),
@@ -244,13 +393,16 @@ function tile(photo, ready, onImageError) {
   }
   const img = h("img", { src: photo.images.thumb, alt: photo.filename, loading: "lazy" });
   img.addEventListener("error", onImageError);
-  return h("figure", { class: "tile" },
+  const feedback = photo.feedback || [];
+  const outline = verdictClass(feedback);
+  return h("figure", { class: outline ? `tile ${outline}` : "tile" },
     h("button", {
       type: "button",
       "aria-label": "View " + photo.filename,
       onclick: () => viewer.open(ready, ready.indexOf(photo)),
     }, img),
     h("figcaption", { title: photo.filename }, photo.filename),
+    feedback.length > 0 ? feedbackChips(feedback) : null,
   );
 }
 
@@ -264,7 +416,7 @@ function showError(err) {
 
 // --- Full-screen viewer ---
 
-const viewer = makeViewer((p) => p.filename);
+const viewer = makeViewer((p) => p.filename, renderFeedbackPanel);
 
 // --- Router ---
 

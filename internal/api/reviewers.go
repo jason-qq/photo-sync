@@ -88,6 +88,11 @@ type Reviewer struct {
 	// Active is true if the link works right now (not revoked, not expired).
 	Active    bool      `json:"active"`
 	CreatedAt time.Time `json:"createdAt"`
+	// Progress, only in GET …/reviewers (absent in other responses):
+	// Reviewed is how many photos have any feedback from this reviewer;
+	// LastActivity is when they last saved feedback, absent if never.
+	Reviewed     *int       `json:"reviewed,omitempty"`
+	LastActivity *time.Time `json:"lastActivity,omitempty"`
 }
 
 // Validate checks r. Name is checked after trimming; callers store it

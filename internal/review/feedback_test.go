@@ -88,6 +88,48 @@ func TestSaveFeedbackErrors(t *testing.T) {
 	}
 }
 
+func TestProgressAndSessionFeedback(t *testing.T) {
+	ctx := context.Background()
+	svc, clk, alice, p1, _ := feedbackSetup(t)
+	sid := alice.SessionID
+	p2 := readyPhoto(t, svc, svc.blobs.(*fakeBlobs), sid, "c.ARW", strings.Repeat("c", 64))
+	bobLink, _ := svc.CreateReviewer(ctx, sid, "Bob", time.Time{})
+	bob := bobLink.Reviewer
+	carolLink, _ := svc.CreateReviewer(ctx, sid, "Carol", time.Time{})
+
+	svc.SaveFeedback(ctx, alice, p1.ID, model.FeedbackPatch{Verdict: ptr(model.VerdictAccept)})
+	clk.t = fixedNow.Add(time.Hour)
+	svc.SaveFeedback(ctx, alice, p2.ID, model.FeedbackPatch{Stars: ptr(3)})
+	svc.SaveFeedback(ctx, bob, p1.ID, model.FeedbackPatch{Verdict: ptr(model.VerdictReject)})
+
+	rs, err := svc.ListReviewers(ctx, sid)
+	if err != nil || len(rs) != 3 {
+		t.Fatalf("ListReviewers: %d, %v", len(rs), err)
+	}
+	want := map[string]struct {
+		n    int
+		last time.Time
+	}{
+		alice.ID:              {2, clk.t.UTC()},
+		bob.ID:                {1, clk.t.UTC()},
+		carolLink.Reviewer.ID: {0, time.Time{}},
+	}
+	for _, r := range rs {
+		w := want[r.Reviewer.ID]
+		if r.Reviewed != w.n || !r.LastActivity.Equal(w.last) {
+			t.Errorf("%s: reviewed %d, last %v; want %d, %v", r.Reviewer.Name, r.Reviewed, r.LastActivity, w.n, w.last)
+		}
+	}
+
+	byPhoto, err := svc.SessionFeedback(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byPhoto[p1.ID]) != 2 || len(byPhoto[p2.ID]) != 1 {
+		t.Errorf("session feedback = %+v", byPhoto)
+	}
+}
+
 func TestDeleteFeedback(t *testing.T) {
 	ctx := context.Background()
 	svc, _, r, ready, _ := feedbackSetup(t)

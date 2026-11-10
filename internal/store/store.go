@@ -67,4 +67,7 @@ type Store interface {
 	// ListFeedback returns one reviewer's feedback in a session, in photo
 	// ID order.
 	ListFeedback(ctx context.Context, sessionID, reviewerID string) ([]model.Feedback, error)
+	// ListSessionFeedback returns every reviewer's feedback in a session,
+	// ordered by reviewer ID then photo ID. For the owner only.
+	ListSessionFeedback(ctx context.Context, sessionID string) ([]model.Feedback, error)
 }

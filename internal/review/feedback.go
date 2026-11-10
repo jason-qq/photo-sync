@@ -54,6 +54,22 @@ func (s *Service) DeleteFeedback(ctx context.Context, r model.Reviewer, photoID 
 	return nil
 }
 
+// SessionFeedback returns every reviewer's feedback in a session, grouped
+// by photo ID (each photo's entries ordered by reviewer). For the owner
+// only: reviewers must never see each other's feedback, which is why this
+// is separate from ListPhotos (which also feeds the reviewer view).
+func (s *Service) SessionFeedback(ctx context.Context, sessionID string) (map[string][]model.Feedback, error) {
+	fs, err := s.store.ListSessionFeedback(ctx, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("list feedback: %w", err)
+	}
+	byPhoto := map[string][]model.Feedback{}
+	for _, f := range fs {
+		byPhoto[f.PhotoID] = append(byPhoto[f.PhotoID], f)
+	}
+	return byPhoto, nil
+}
+
 // checkPatch enforces the feedback rules: verdict accept/reject, stars
 // 1–5, comment within MaxCommentLen; zero values clear. At least one field
 // must be present.

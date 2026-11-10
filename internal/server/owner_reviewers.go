@@ -36,8 +36,13 @@ func (s *Server) listReviewers(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	resp := api.ListReviewersResponse{Reviewers: make([]api.Reviewer, len(rs))}
-	for i, rv := range rs {
-		resp.Reviewers[i] = s.toAPIReviewer(rv)
+	for i, sum := range rs {
+		ar := s.toAPIReviewer(sum.Reviewer)
+		ar.Reviewed = &sum.Reviewed
+		if !sum.LastActivity.IsZero() {
+			ar.LastActivity = &sum.LastActivity
+		}
+		resp.Reviewers[i] = ar
 	}
 	writeJSON(w, http.StatusOK, resp)
 	return nil

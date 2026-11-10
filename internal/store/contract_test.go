@@ -487,6 +487,28 @@ func testFeedbackListAndDelete(t *testing.T, s Store) {
 	if bobs, _ := s.ListFeedback(ctx, sid, bob); len(bobs) != 1 {
 		t.Errorf("deleting alice's feedback touched bob's: %+v", bobs)
 	}
+
+	// Session-wide: everyone's feedback in this session, ordered by
+	// reviewer then photo; nothing from the other session.
+	all, err := s.ListSessionFeedback(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type key struct{ r, p string }
+	var got2 []key
+	for _, f := range all {
+		got2 = append(got2, key{f.ReviewerID, f.PhotoID})
+	}
+	want := []key{{alice, p2}, {bob, p1}}
+	if alice > bob {
+		want = []key{{bob, p1}, {alice, p2}}
+	}
+	if !slices.Equal(got2, want) {
+		t.Errorf("session feedback = %v, want %v", got2, want)
+	}
+	if none, err := s.ListSessionFeedback(ctx, newSession(t, s)); err != nil || none == nil || len(none) != 0 {
+		t.Errorf("empty session: %v, %v (want non-nil empty slice)", none, err)
+	}
 }
 
 func testSetPhotoStatus(t *testing.T, s Store) {

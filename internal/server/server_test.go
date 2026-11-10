@@ -440,6 +440,73 @@ func TestFeedbackFlow(t *testing.T) {
 	}
 }
 
+func TestOwnerSeesFeedback(t *testing.T) {
+	e := newEnv(t)
+	sid := e.createSession()
+	p1 := e.readyPhoto(sid, "a.ARW", hashA)
+	p2 := e.readyPhoto(sid, "b.ARW", strings.Repeat("b", 64))
+
+	var aliceLink api.CreateReviewerResponse
+	e.call("POST", api.ReviewersPath(sid), map[string]any{"name": "Alice"}, &aliceLink)
+	if aliceLink.Reviewer.Reviewed != nil {
+		t.Error("create response carries progress; it should be list-only")
+	}
+	alice := cookieNamed(e.send("POST", "/api/review/session",
+		`{"token":"`+strings.TrimPrefix(aliceLink.LinkPath, "/r#")+`"}`, "", nil), server.ReviewerCookie)
+	bob := e.reviewerCookie(sid, "Bob")
+	e.reviewerCookie(sid, "Carol") // no feedback
+
+	e.asReviewer(alice, "PATCH", api.FeedbackPath(p1), `{"verdict":"accept","stars":5,"comment":"最高"}`, nil)
+	e.asReviewer(alice, "PATCH", api.FeedbackPath(p2), `{"verdict":"reject"}`, nil)
+	e.asReviewer(bob, "PATCH", api.FeedbackPath(p1), `{"stars":3}`, nil)
+
+	// Photos carry everyone's feedback; an unreviewed photo has [].
+	var raw json.RawMessage
+	e.call("GET", api.PhotosPath(sid), nil, &raw)
+	var list api.ListPhotosResponse
+	json.Unmarshal(raw, &list)
+	byID := map[string]api.Photo{}
+	for _, p := range list.Photos {
+		byID[p.ID] = p
+	}
+	if fb := byID[p1].Feedback; len(fb) != 2 {
+		t.Fatalf("p1 feedback: %+v", fb)
+	}
+	var aliceOnP1 *api.ReviewerFeedback
+	for i, f := range byID[p1].Feedback {
+		if f.ReviewerID == aliceLink.Reviewer.ID {
+			aliceOnP1 = &byID[p1].Feedback[i]
+		}
+	}
+	if aliceOnP1 == nil || *aliceOnP1.Verdict != "accept" || *aliceOnP1.Stars != 5 || *aliceOnP1.Comment != "最高" {
+		t.Errorf("alice on p1: %+v", aliceOnP1)
+	}
+	if len(byID[p2].Feedback) != 1 || *byID[p2].Feedback[0].Verdict != "reject" {
+		t.Errorf("p2 feedback: %+v", byID[p2].Feedback)
+	}
+	// Flattened JSON: {"reviewerId":…, "verdict":…}, not nested.
+	if !strings.Contains(string(raw), `"reviewerId":"`+aliceLink.Reviewer.ID+`","verdict":"accept"`) {
+		t.Errorf("feedback JSON shape: %s", raw)
+	}
+
+	// Reviewers carry progress.
+	var rl api.ListReviewersResponse
+	e.call("GET", api.ReviewersPath(sid), nil, &rl)
+	got := map[string]api.Reviewer{}
+	for _, r := range rl.Reviewers {
+		got[r.Name] = r
+	}
+	for name, want := range map[string]int{"Alice": 2, "Bob": 1, "Carol": 0} {
+		r := got[name]
+		if r.Reviewed == nil || *r.Reviewed != want {
+			t.Errorf("%s reviewed = %v, want %d", name, r.Reviewed, want)
+		}
+		if (want > 0) != (r.LastActivity != nil) {
+			t.Errorf("%s lastActivity = %v", name, r.LastActivity)
+		}
+	}
+}
+
 func TestFeedbackValidation(t *testing.T) {
 	e := newEnv(t)
 	sid := e.createSession()

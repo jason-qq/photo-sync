@@ -620,13 +620,23 @@ func (d *Dynamo) DeleteFeedback(ctx context.Context, sessionID, reviewerID, phot
 }
 
 func (d *Dynamo) ListFeedback(ctx context.Context, sessionID, reviewerID string) ([]model.Feedback, error) {
+	return d.queryFeedback(ctx, sessionID, reviewerFeedbackPrefix(reviewerID))
+}
+
+func (d *Dynamo) ListSessionFeedback(ctx context.Context, sessionID string) ([]model.Feedback, error) {
+	return d.queryFeedback(ctx, sessionID, feedbackPrefix)
+}
+
+// queryFeedback returns the session's feedback items whose SK starts with
+// prefix, in SK order (reviewer, then photo).
+func (d *Dynamo) queryFeedback(ctx context.Context, sessionID, prefix string) ([]model.Feedback, error) {
 	items, err := queryAll[feedbackItem](ctx, d.db, &dynamodb.QueryInput{
 		TableName:              &d.table,
 		ConsistentRead:         aws.Bool(true),
 		KeyConditionExpression: aws.String("PK = :pk AND begins_with(SK, :prefix)"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":pk":     &types.AttributeValueMemberS{Value: sessionPK(sessionID)},
-			":prefix": &types.AttributeValueMemberS{Value: reviewerFeedbackPrefix(reviewerID)},
+			":prefix": &types.AttributeValueMemberS{Value: prefix},
 		},
 	})
 	if err != nil {

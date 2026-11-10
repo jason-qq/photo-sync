@@ -13,11 +13,7 @@
 .hint { margin: -12px 0 16px; font-size: 0.9rem; }
 
 /* Tiles: number, verdict buttons, star summary. Reviewers don't see
-   filenames. */
-:root { --accept: #3fb950; --reject: #ff7b72; --star: #e3b341; }
-.tile.accepted { border-color: var(--accept); }
-.tile.rejected { border-color: var(--reject); }
-.tile.rejected img { opacity: 0.45; }
+   filenames. (Verdict colours and accepted/rejected tiles: app.css.) */
 .tile-meta {
   display: flex;
   align-items: center;
@@ -53,15 +49,7 @@
   white-space: nowrap;
 }
 
-/* Viewer feedback panel. */
-.viewer-feedback {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 10px 16px;
-  padding: 10px 16px 14px;
-  border-top: 1px solid var(--border);
-}
+/* Viewer feedback panel controls (panel layout: app.css). */
 .viewer-feedback .row { display: flex; align-items: center; gap: 8px; }
 .stars { display: flex; gap: 2px; }
 .stars button {
@@ -90,5 +78,4 @@
 
 @media (max-width: 600px) {
   .bar .save-status { display: none; } /* the viewer shows its own status */
-  .viewer-feedback { padding: 8px 10px 10px; }
 }

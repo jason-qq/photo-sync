@@ -238,3 +238,22 @@ func (m *Memory) ListFeedback(_ context.Context, sessionID, reviewerID string) (
 	slices.SortFunc(fs, func(a, b model.Feedback) int { return strings.Compare(a.PhotoID, b.PhotoID) })
 	return fs, nil
 }
+
+func (m *Memory) ListSessionFeedback(_ context.Context, sessionID string) ([]model.Feedback, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	fs := []model.Feedback{}
+	for k, f := range m.feedback {
+		if k[0] == sessionID {
+			fs = append(fs, f)
+		}
+	}
+	// Same order as Dynamo's sort key FB#{rid}#{pid}.
+	slices.SortFunc(fs, func(a, b model.Feedback) int {
+		if c := strings.Compare(a.ReviewerID, b.ReviewerID); c != 0 {
+			return c
+		}
+		return strings.Compare(a.PhotoID, b.PhotoID)
+	})
+	return fs, nil
+}
