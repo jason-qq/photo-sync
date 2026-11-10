@@ -16,11 +16,14 @@ import (
 
 // Dynamo is a Store backed by a single DynamoDB table (see DESIGN.md §5).
 //
-// Key layout, all items of a session in one partition:
+// Key layout, all items of a session in one partition, plus one global
+// lookup item per reviewer link:
 //
-//	Session     PK=SESSION#{sid}  SK=META           GSI1PK=SESSIONS  GSI1SK={sid}
-//	Photo       PK=SESSION#{sid}  SK=PHOTO#{pid}    LSI1SK=PHOTO#{filename}#{pid}
-//	Hash lock   PK=SESSION#{sid}  SK=HASH#{hash}    (photoId)
+//	Session     PK=SESSION#{sid}  SK=META            GSI1PK=SESSIONS  GSI1SK={sid}
+//	Photo       PK=SESSION#{sid}  SK=PHOTO#{pid}     LSI1SK=PHOTO#{filename}#{pid}
+//	Hash lock   PK=SESSION#{sid}  SK=HASH#{hash}     (photoId)
+//	Reviewer    PK=SESSION#{sid}  SK=REVIEWER#{rid}  (name, tokenHash, expiresAt, revoked)
+//	Token       PK=TOKEN#{hash}   SK=META            (sessionId, reviewerId)
 //
 // GSI1 lists sessions; LSI1 lists a session's photos in filename order.
 type Dynamo struct {
@@ -53,8 +56,10 @@ func NewDynamo(db *dynamodb.Client, table string) *Dynamo {
 // The index names are numbered rather than descriptive so a later access
 // pattern can reuse an index with new prefixes, without a schema change.
 const (
-	// attrPK is the table's partition key: SESSION#{sid} on every item,
-	// so a session and everything in it live in one partition.
+	// attrPK is the table's partition key: SESSION#{sid} on a session and
+	// everything in it, so they live in one partition. Token lookup items
+	// are the exception (TOKEN#{hash}): they must be found from the token
+	// alone, before the session is known.
 	attrPK = "PK"
 	// attrSK is the table's sort key; identifies the item within its
 	// session and encodes its type (see sessionPK etc. below).
@@ -108,6 +113,19 @@ func hashSK(hash string) string { return "HASH#" + hash }
 // photoLSI1SK is the LSI1 sort key of a photo.
 func photoLSI1SK(filename, pid string) string { return photoPrefix + filename + "#" + pid }
 
+// reviewerPrefix starts a reviewer's SK.
+const reviewerPrefix = "REVIEWER#"
+
+// reviewerSK is the SK of reviewer rid's item. The reviewer lives in the
+// session's partition so that listing, extending and revoking use plain
+// keys and consistent reads.
+func reviewerSK(rid string) string { return reviewerPrefix + rid }
+
+// tokenPK is the PK of the lookup item for a link token's hash. It maps the
+// token to its reviewer and never changes; expiry and revocation live only
+// on the reviewer item.
+func tokenPK(tokenHash string) string { return "TOKEN#" + tokenHash }
+
 // Item shapes, one struct per item type, mapped to attributes by the
 // dynamodbav tags. Key attributes are upper case (structural), data
 // attributes camelCase (matching the JSON API). Timestamps are stored as
@@ -145,6 +163,35 @@ type hashItem struct {
 	PK      string `dynamodbav:"PK"`
 	SK      string `dynamodbav:"SK"`
 	PhotoID string `dynamodbav:"photoId"`
+}
+
+// reviewerItem is a reviewer: PK=SESSION#{sid}, SK=REVIEWER#{rid}.
+type reviewerItem struct {
+	PK        string    `dynamodbav:"PK"`
+	SK        string    `dynamodbav:"SK"`
+	ID        string    `dynamodbav:"id"`
+	SessionID string    `dynamodbav:"sessionId"`
+	Name      string    `dynamodbav:"name"`
+	TokenHash string    `dynamodbav:"tokenHash"`
+	ExpiresAt time.Time `dynamodbav:"expiresAt"`
+	Revoked   bool      `dynamodbav:"revoked"`
+	CreatedAt time.Time `dynamodbav:"createdAt"`
+}
+
+// tokenItem maps a link token's hash to its reviewer: PK=TOKEN#{hash},
+// SK=META. In no index.
+type tokenItem struct {
+	PK         string `dynamodbav:"PK"`
+	SK         string `dynamodbav:"SK"`
+	SessionID  string `dynamodbav:"sessionId"`
+	ReviewerID string `dynamodbav:"reviewerId"`
+}
+
+func (it reviewerItem) model() model.Reviewer {
+	return model.Reviewer{
+		ID: it.ID, SessionID: it.SessionID, Name: it.Name, TokenHash: it.TokenHash,
+		ExpiresAt: it.ExpiresAt, Revoked: it.Revoked, CreatedAt: it.CreatedAt,
+	}
 }
 
 func (it sessionItem) model() model.Session {
@@ -347,15 +394,126 @@ func (d *Dynamo) ListPhotos(ctx context.Context, sessionID string) ([]model.Phot
 }
 
 func (d *Dynamo) SetPhotoStatus(ctx context.Context, sessionID, photoID string, status model.PhotoStatus) error {
-	_, err := d.db.UpdateItem(ctx, &dynamodb.UpdateItemInput{
-		TableName:                &d.table,
-		Key:                      key(sessionPK(sessionID), photoSK(photoID)),
-		UpdateExpression:         aws.String("SET #status = :status"),
-		ConditionExpression:      aws.String("attribute_exists(PK)"),
-		ExpressionAttributeNames: map[string]string{"#status": "status"}, // reserved word
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":status": &types.AttributeValueMemberS{Value: string(status)},
+	return d.setAttr(ctx, sessionPK(sessionID), photoSK(photoID), "status", status)
+}
+
+// CreateReviewer writes the reviewer and its token lookup item in one
+// transaction, conditional on the session existing and both keys being
+// free.
+func (d *Dynamo) CreateReviewer(ctx context.Context, r model.Reviewer) error {
+	pk := sessionPK(r.SessionID)
+	rev, err := attributevalue.MarshalMap(reviewerItem{
+		PK: pk, SK: reviewerSK(r.ID),
+		ID: r.ID, SessionID: r.SessionID, Name: r.Name, TokenHash: r.TokenHash,
+		ExpiresAt: r.ExpiresAt, Revoked: r.Revoked, CreatedAt: r.CreatedAt,
+	})
+	if err != nil {
+		return err
+	}
+	tok, err := attributevalue.MarshalMap(tokenItem{
+		PK: tokenPK(r.TokenHash), SK: skSession, SessionID: r.SessionID, ReviewerID: r.ID,
+	})
+	if err != nil {
+		return err
+	}
+
+	const (
+		iSession = iota
+		iToken
+		iReviewer
+	)
+	_, err = d.db.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+		TransactItems: []types.TransactWriteItem{
+			iSession: {ConditionCheck: &types.ConditionCheck{
+				TableName:           &d.table,
+				Key:                 key(pk, skSession),
+				ConditionExpression: aws.String("attribute_exists(PK)"),
+			}},
+			iToken:    {Put: &types.Put{TableName: &d.table, Item: tok, ConditionExpression: notExists}},
+			iReviewer: {Put: &types.Put{TableName: &d.table, Item: rev, ConditionExpression: notExists}},
 		},
+	})
+	var tce *types.TransactionCanceledException
+	if !errors.As(err, &tce) {
+		return err // nil on success
+	}
+	failed := func(i int) bool {
+		return i < len(tce.CancellationReasons) &&
+			aws.ToString(tce.CancellationReasons[i].Code) == "ConditionalCheckFailed"
+	}
+	switch {
+	case failed(iSession):
+		return ErrNotFound
+	case failed(iToken), failed(iReviewer):
+		return ErrExists
+	}
+	// Tokens are random, so a concurrent create of the same token (the
+	// only source of TransactionConflict here) isn't worth retrying.
+	return err
+}
+
+func (d *Dynamo) GetReviewer(ctx context.Context, sessionID, reviewerID string) (model.Reviewer, error) {
+	var it reviewerItem
+	if err := d.get(ctx, sessionPK(sessionID), reviewerSK(reviewerID), &it); err != nil {
+		return model.Reviewer{}, err
+	}
+	return it.model(), nil
+}
+
+func (d *Dynamo) GetReviewerByTokenHash(ctx context.Context, tokenHash string) (model.Reviewer, error) {
+	var tok tokenItem
+	if err := d.get(ctx, tokenPK(tokenHash), skSession, &tok); err != nil {
+		return model.Reviewer{}, err
+	}
+	return d.GetReviewer(ctx, tok.SessionID, tok.ReviewerID)
+}
+
+func (d *Dynamo) ListReviewers(ctx context.Context, sessionID string) ([]model.Reviewer, error) {
+	if _, err := d.GetSession(ctx, sessionID); err != nil {
+		return nil, err
+	}
+	items, err := queryAll[reviewerItem](ctx, d.db, &dynamodb.QueryInput{
+		TableName:              &d.table,
+		ConsistentRead:         aws.Bool(true),
+		KeyConditionExpression: aws.String("PK = :pk AND begins_with(SK, :prefix)"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pk":     &types.AttributeValueMemberS{Value: sessionPK(sessionID)},
+			":prefix": &types.AttributeValueMemberS{Value: reviewerPrefix},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	rs := make([]model.Reviewer, len(items))
+	for i, it := range items {
+		rs[i] = it.model()
+	}
+	return rs, nil
+}
+
+func (d *Dynamo) SetReviewerExpiry(ctx context.Context, sessionID, reviewerID string, expiresAt time.Time) error {
+	return d.setAttr(ctx, sessionPK(sessionID), reviewerSK(reviewerID), "expiresAt", expiresAt)
+}
+
+func (d *Dynamo) RevokeReviewer(ctx context.Context, sessionID, reviewerID string) error {
+	return d.setAttr(ctx, sessionPK(sessionID), reviewerSK(reviewerID), "revoked", true)
+}
+
+// setAttr sets one attribute on an existing item, returning ErrNotFound if
+// the item doesn't exist (instead of creating it, as UpdateItem would). The
+// value is encoded like the item structs encode it.
+func (d *Dynamo) setAttr(ctx context.Context, pk, sk, name string, value any) error {
+	av, err := attributevalue.Marshal(value)
+	if err != nil {
+		return err
+	}
+	_, err = d.db.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:                 &d.table,
+		Key:                       key(pk, sk),
+		UpdateExpression:          aws.String("SET #a = :v"),
+		ConditionExpression:       aws.String("attribute_exists(PK)"),
+		ExpressionAttributeNames:  map[string]string{"#a": name}, // names may be reserved words
+		ExpressionAttributeValues: map[string]types.AttributeValue{":v": av},
 	})
 	var ccf *types.ConditionalCheckFailedException
 	if errors.As(err, &ccf) {

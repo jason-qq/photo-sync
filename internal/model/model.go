@@ -39,6 +39,24 @@ type Photo struct {
 	CreatedAt time.Time   `json:"createdAt"`
 }
 
+// Reviewer is one person's access to one session via a secret link. The
+// link's token is never stored, only its SHA-256 (TokenHash). ID is stable
+// across the reviewer's lifetime and keys their feedback.
+type Reviewer struct {
+	ID        string    `json:"id"`
+	SessionID string    `json:"sessionId"`
+	Name      string    `json:"name"`
+	TokenHash string    `json:"-"` // lowercase hex SHA-256 of the link token
+	ExpiresAt time.Time `json:"expiresAt"`
+	Revoked   bool      `json:"revoked"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// Active reports whether the reviewer's link works at time now.
+func (r Reviewer) Active(now time.Time) bool {
+	return !r.Revoked && now.Before(r.ExpiresAt)
+}
+
 // ThumbKey is the blob key of the photo's grid thumbnail.
 func (p Photo) ThumbKey() string {
 	return "sessions/" + p.SessionID + "/" + p.ID + "/thumb.jpg"

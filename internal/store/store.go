@@ -1,11 +1,12 @@
-// Package store persists sessions and photos. Store is the interface the API
-// depends on; Memory is an in-process implementation for local development
-// and tests. A DynamoDB implementation will follow the single-table design.
+// Package store persists sessions, photos and reviewers. Store is the
+// interface the API depends on; Memory is an in-process implementation for
+// local development and tests, Dynamo the DynamoDB single-table one.
 package store
 
 import (
 	"context"
 	"errors"
+	"time"
 
 	"photo-sync/internal/model"
 )
@@ -37,4 +38,20 @@ type Store interface {
 	// ErrNotFound if the session doesn't exist.
 	ListPhotos(ctx context.Context, sessionID string) ([]model.Photo, error)
 	SetPhotoStatus(ctx context.Context, sessionID, photoID string, status model.PhotoStatus) error
+
+	// CreateReviewer stores r. Returns ErrNotFound if the session doesn't
+	// exist and ErrExists if r.ID or r.TokenHash is already taken. Atomic:
+	// on error nothing is stored.
+	CreateReviewer(ctx context.Context, r model.Reviewer) error
+	GetReviewer(ctx context.Context, sessionID, reviewerID string) (model.Reviewer, error)
+	// GetReviewerByTokenHash finds the reviewer whose link token hashes to
+	// tokenHash, revoked or expired ones included; callers check Active.
+	GetReviewerByTokenHash(ctx context.Context, tokenHash string) (model.Reviewer, error)
+	// ListReviewers returns a session's reviewers in ID (creation) order.
+	// Returns ErrNotFound if the session doesn't exist.
+	ListReviewers(ctx context.Context, sessionID string) ([]model.Reviewer, error)
+	// SetReviewerExpiry and RevokeReviewer return ErrNotFound if the
+	// reviewer doesn't exist.
+	SetReviewerExpiry(ctx context.Context, sessionID, reviewerID string, expiresAt time.Time) error
+	RevokeReviewer(ctx context.Context, sessionID, reviewerID string) error
 }

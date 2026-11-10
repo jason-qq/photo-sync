@@ -27,6 +27,10 @@ func testContract(t *testing.T, newStore func(t *testing.T) Store) {
 		{"ListSessions", testListSessions},
 		{"ListPhotos", testListPhotos},
 		{"SetPhotoStatus", testSetPhotoStatus},
+		{"ReviewerRoundTrip", testReviewerRoundTrip},
+		{"ReviewerErrors", testReviewerErrors},
+		{"ListReviewers", testListReviewers},
+		{"ReviewerUpdates", testReviewerUpdates},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) { tt.fn(t, newStore(t)) })
@@ -241,6 +245,133 @@ func testListPhotos(t *testing.T, s Store) {
 	slices.Sort(dups)
 	if len(got) == len(wantNames) && (got[1].ID != dups[0] || got[2].ID != dups[1]) {
 		t.Errorf("duplicate filenames not in ID order")
+	}
+}
+
+func reviewer(sid, tokenHash string) model.Reviewer {
+	return model.Reviewer{
+		ID: model.NewID(), SessionID: sid, Name: "山田 花子", TokenHash: tokenHash,
+		ExpiresAt: ts.Add(7 * 24 * time.Hour), CreatedAt: ts,
+	}
+}
+
+func mustCreateReviewer(t *testing.T, s Store, r model.Reviewer) model.Reviewer {
+	t.Helper()
+	if err := s.CreateReviewer(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+func sameReviewer(a, b model.Reviewer) bool {
+	return a.ID == b.ID && a.SessionID == b.SessionID && a.Name == b.Name && a.TokenHash == b.TokenHash &&
+		a.ExpiresAt.Equal(b.ExpiresAt) && a.Revoked == b.Revoked && a.CreatedAt.Equal(b.CreatedAt)
+}
+
+func testReviewerRoundTrip(t *testing.T, s Store) {
+	sid := newSession(t, s)
+	want := mustCreateReviewer(t, s, reviewer(sid, "tok1"))
+
+	got, err := s.GetReviewer(ctx, sid, want.ID)
+	if err != nil || !sameReviewer(got, want) {
+		t.Errorf("GetReviewer = %+v, %v; want %+v", got, err, want)
+	}
+	got, err = s.GetReviewerByTokenHash(ctx, "tok1")
+	if err != nil || !sameReviewer(got, want) {
+		t.Errorf("GetReviewerByTokenHash = %+v, %v; want %+v", got, err, want)
+	}
+}
+
+func testReviewerErrors(t *testing.T, s Store) {
+	sid := newSession(t, s)
+	if err := s.CreateReviewer(ctx, reviewer("nope", "t0")); !errors.Is(err, ErrNotFound) {
+		t.Errorf("unknown session: %v, want ErrNotFound", err)
+	}
+	r := mustCreateReviewer(t, s, reviewer(sid, "t1"))
+
+	if err := s.CreateReviewer(ctx, reviewer(sid, "t1")); !errors.Is(err, ErrExists) {
+		t.Errorf("taken token hash: %v, want ErrExists", err)
+	}
+	sameID := reviewer(sid, "t2")
+	sameID.ID = r.ID
+	if err := s.CreateReviewer(ctx, sameID); !errors.Is(err, ErrExists) {
+		t.Errorf("taken ID: %v, want ErrExists", err)
+	}
+	// The failed creates claimed nothing: t2 is still free.
+	if _, err := s.GetReviewerByTokenHash(ctx, "t2"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("token of failed create: %v, want ErrNotFound", err)
+	}
+	mustCreateReviewer(t, s, reviewer(sid, "t2"))
+
+	if _, err := s.GetReviewer(ctx, sid, "nope"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetReviewer: %v", err)
+	}
+	if _, err := s.GetReviewerByTokenHash(ctx, "nope"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetReviewerByTokenHash: %v", err)
+	}
+	if _, err := s.ListReviewers(ctx, "nope"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("ListReviewers: %v", err)
+	}
+	if err := s.SetReviewerExpiry(ctx, sid, "nope", ts); !errors.Is(err, ErrNotFound) {
+		t.Errorf("SetReviewerExpiry: %v", err)
+	}
+	if err := s.RevokeReviewer(ctx, sid, "nope"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("RevokeReviewer: %v", err)
+	}
+}
+
+func testListReviewers(t *testing.T, s Store) {
+	sid, other := newSession(t, s), newSession(t, s)
+	got, err := s.ListReviewers(ctx, sid)
+	if err != nil || got == nil || len(got) != 0 {
+		t.Fatalf("no reviewers: %v, %v (want non-nil empty slice)", got, err)
+	}
+
+	// Photos in the same partition must not show up as reviewers.
+	mustCreatePhoto(t, s, photo(sid, "h1"))
+	var want []string
+	for _, tok := range []string{"a", "b", "c"} {
+		want = append(want, mustCreateReviewer(t, s, reviewer(sid, tok)).ID)
+	}
+	mustCreateReviewer(t, s, reviewer(other, "d"))
+
+	got, err = s.ListReviewers(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, r := range got {
+		ids = append(ids, r.ID)
+	}
+	if !slices.Equal(ids, want) {
+		t.Errorf("IDs = %v, want %v (creation order, this session only)", ids, want)
+	}
+	if got[0].Name != "山田 花子" || got[0].TokenHash != "a" {
+		t.Errorf("listed fields: %+v", got[0])
+	}
+}
+
+func testReviewerUpdates(t *testing.T, s Store) {
+	sid := newSession(t, s)
+	r := mustCreateReviewer(t, s, reviewer(sid, "tok"))
+
+	later := ts.Add(30 * 24 * time.Hour)
+	if err := s.SetReviewerExpiry(ctx, sid, r.ID, later); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RevokeReviewer(ctx, sid, r.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RevokeReviewer(ctx, sid, r.ID); err != nil {
+		t.Errorf("revoke again: %v (want idempotent)", err)
+	}
+	// Both lookups see the change: state lives in one place.
+	byID, _ := s.GetReviewer(ctx, sid, r.ID)
+	byToken, _ := s.GetReviewerByTokenHash(ctx, "tok")
+	for name, got := range map[string]model.Reviewer{"by ID": byID, "by token": byToken} {
+		if !got.ExpiresAt.Equal(later) || !got.Revoked || got.Name != r.Name {
+			t.Errorf("%s: %+v", name, got)
+		}
 	}
 }
 
