@@ -9,6 +9,7 @@ import (
 
 	"photo-sync/internal/app"
 	"photo-sync/internal/blob"
+	"photo-sync/internal/server"
 	"photo-sync/internal/store"
 )
 
@@ -33,9 +34,10 @@ func Start(t testing.TB) *Env {
 
 	dir := t.TempDir()
 	h, err := app.New(app.Config{
-		APIKey: APIKey,
-		Store:  store.NewMemory(),
-		Blobs:  blob.NewLocal(dir, ts.URL, []byte("secret")),
+		APIKeyHash:    server.HashAPIKey(APIKey),
+		SessionSecret: []byte("test-session-secret-at-least-32-bytes"),
+		Store:         store.NewMemory(),
+		Blobs:         blob.NewLocal(dir, ts.URL, []byte("secret")),
 	})
 	if err != nil {
 		t.Fatal(err)

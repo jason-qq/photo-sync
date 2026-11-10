@@ -26,10 +26,11 @@ import (
 
 // Config holds the app's dependencies.
 type Config struct {
-	APIKey string // owner API key (required)
-	Store  store.Store
-	Blobs  blob.Store
-	Logger *slog.Logger // defaults to slog.Default()
+	APIKeyHash    []byte // server.HashAPIKey(owner API key) (required)
+	SessionSecret []byte // signs owner session cookies (required, see server.Config)
+	Store         store.Store
+	Blobs         blob.Store
+	Logger        *slog.Logger // defaults to slog.Default()
 }
 
 // New returns the app's HTTP handler:
@@ -37,6 +38,11 @@ type Config struct {
 //	/api/        JSON API (internal/server)
 //	/dev/blob/   signed blob uploads/downloads, only when Blobs is a *blob.Local
 //	/            owner web UI (internal/ui)
+//
+// Unsafe cross-origin browser requests (e.g. a form on another site posting
+// to /api/login or using the session cookie) are rejected with 403.
+// Non-browser clients such as the uploader send no Origin or Sec-Fetch-Site
+// header and are unaffected.
 func New(cfg Config) (http.Handler, error) {
 	if cfg.Store == nil || cfg.Blobs == nil {
 		return nil, errors.New("app: Store and Blobs are required")
@@ -45,7 +51,12 @@ func New(cfg Config) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	srv, err := server.New(server.Config{Service: svc, APIKey: cfg.APIKey, Logger: cfg.Logger})
+	srv, err := server.New(server.Config{
+		Service:       svc,
+		APIKeyHash:    cfg.APIKeyHash,
+		SessionSecret: cfg.SessionSecret,
+		Logger:        cfg.Logger,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +73,7 @@ func New(cfg Config) (http.Handler, error) {
 		mux.Handle(blob.LocalPathPrefix+"{key...}", local)
 	}
 	mux.Handle("/", ui.Handler(ui.Config{ImageOrigins: []string{imageOrigin}}))
-	return mux, nil
+	return http.NewCrossOriginProtection().Handler(mux), nil
 }
 
 // urlOrigin returns the scheme://host that blobs' view URLs point at.

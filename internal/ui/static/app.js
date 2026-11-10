@@ -1,5 +1,9 @@
 // Owner UI: sign in with the API key, browse sessions, view photos.
 //
+// Sign-in posts the key to /api/login, which sets an HttpOnly session
+// cookie; this script never stores the key and can't read the cookie. The
+// browser sends the cookie with every same-origin request.
+//
 // Routes (URL hash, so a refresh keeps your place):
 //   #/            session list
 //   #/s/{sid}     one session's photos
@@ -8,39 +12,37 @@
 // never innerHTML.
 "use strict";
 
-const KEY_STORAGE = "photosync.apiKey";
 // Image URLs expire after about an hour; refetch a bit before that.
 const IMAGE_URL_MAX_AGE_MS = 50 * 60 * 1000;
 
 const app = document.getElementById("app");
 const signoutBtn = document.getElementById("signout");
 
-// --- API key storage (sessionStorage: cleared when the tab closes) ---
-
-function getKey() {
-  try { return sessionStorage.getItem(KEY_STORAGE); } catch { return null; }
-}
-function setKey(key) {
-  try { sessionStorage.setItem(KEY_STORAGE, key); } catch { /* private mode */ }
-}
-function clearKey() {
-  try { sessionStorage.removeItem(KEY_STORAGE); } catch { /* ignore */ }
-}
+// Whether an API call has succeeded since the page loaded, to tell "not
+// signed in yet" from "session expired" when a 401 arrives.
+let signedIn = false;
 
 // --- API ---
 
 class Unauthorized extends Error {}
 
-async function api(path, key = getKey()) {
-  const resp = await fetch(path, {
-    headers: { Authorization: "Bearer " + key },
-    cache: "no-store",
-  });
+// request sends a same-origin request (the session cookie goes along
+// automatically) and returns the decoded JSON body, or null for 204.
+async function request(method, path, body) {
+  const init = { method, cache: "no-store" };
+  if (body !== undefined) {
+    init.headers = { "Content-Type": "application/json" };
+    init.body = JSON.stringify(body);
+  }
+  const resp = await fetch(path, init);
   if (resp.status === 401) throw new Unauthorized("unauthorized");
-  const body = await resp.json().catch(() => ({}));
-  if (!resp.ok) throw new Error(body.error || `HTTP ${resp.status}`);
-  return body;
+  if (resp.status === 204) return null;
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+  return data;
 }
+
+const api = (path) => request("GET", path);
 
 // --- DOM helper ---
 
@@ -68,6 +70,7 @@ function plural(n, word) {
 // --- Views ---
 
 function showSignIn(message) {
+  signedIn = false;
   signoutBtn.hidden = true;
   const input = h("input", {
     type: "password", id: "key", autocomplete: "current-password", required: true,
@@ -83,10 +86,9 @@ function showSignIn(message) {
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     status.textContent = "";
-    const key = input.value.trim();
     try {
-      await api("/api/sessions", key); // verify before storing
-      setKey(key);
+      await request("POST", "/api/login", { apiKey: input.value.trim() });
+      input.value = "";
       route();
     } catch (err) {
       status.textContent = err instanceof Unauthorized ? "That key was not accepted." : err.message;
@@ -226,29 +228,29 @@ const viewer = (() => {
 
 async function route() {
   viewer.close();
-  if (!getKey()) {
-    showSignIn();
-    return;
-  }
-  signoutBtn.hidden = false;
   const m = location.hash.match(/^#\/s\/([^/]+)$/);
   try {
     if (m) await showSession(decodeURIComponent(m[1]));
     else await showSessions();
+    signedIn = true;
+    signoutBtn.hidden = false;
   } catch (err) {
     if (err instanceof Unauthorized) {
-      clearKey();
-      showSignIn("Your key was rejected. Sign in again.");
+      showSignIn(signedIn ? "Your session has ended. Sign in again." : "");
     } else {
       showError(err);
     }
   }
 }
 
-signoutBtn.addEventListener("click", () => {
-  clearKey();
+signoutBtn.addEventListener("click", async () => {
+  try {
+    await request("POST", "/api/logout");
+  } catch {
+    // The cookie may already be gone; show the sign-in page regardless.
+  }
   location.hash = "#/";
-  route();
+  showSignIn();
 });
 window.addEventListener("hashchange", route);
 route();

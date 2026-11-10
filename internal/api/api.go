@@ -6,7 +6,8 @@
 // evolve (and later be generated from an OpenAPI spec) without changing
 // domain types.
 //
-// Authentication: owner routes require "Authorization: Bearer <api key>".
+// Authentication: owner routes require "Authorization: Bearer <api key>"
+// or the session cookie set by POST /api/login.
 // Errors: non-2xx responses carry an Error body.
 package api
 
@@ -17,6 +18,8 @@ import (
 
 // Routes, as used in the server's mux patterns.
 const (
+	RouteLogin         = "POST /api/login"
+	RouteLogout        = "POST /api/logout"
 	RouteCreateSession = "POST /api/sessions"
 	RouteListSessions  = "GET /api/sessions"
 	RouteCreatePhoto   = "POST /api/sessions/{sid}/photos"
@@ -39,6 +42,17 @@ func PhotosPath(sessionID string) string {
 // CompletePath is the path for RouteCompletePhoto.
 func CompletePath(sessionID, photoID string) string {
 	return PhotosPath(sessionID) + "/" + url.PathEscape(photoID) + "/complete"
+}
+
+// LoginRequest is the body of POST /api/login, used by the web UI to
+// exchange the owner API key for an HttpOnly session cookie (so page
+// scripts never hold the key). Owner routes accept that cookie in place of
+// the Authorization header.
+//
+// Responses: 204 with Set-Cookie; 400 invalid body; 401 wrong key.
+// POST /api/logout (no body) always returns 204 and deletes the cookie.
+type LoginRequest struct {
+	APIKey string `json:"apiKey"`
 }
 
 // CreateSessionRequest is the body of POST /api/sessions.

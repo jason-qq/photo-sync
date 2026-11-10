@@ -132,8 +132,12 @@ unfinished. Ctrl+C is safe; run again to continue.
 
 ### 3. Open the owner UI
 
-Go to http://localhost:8080 and sign in with the API key. The key is kept in the browser
-tab's session storage and cleared when the tab closes.
+Go to http://localhost:8080 and sign in with the API key. The browser exchanges it for a
+7-day session cookie that page scripts can't read; the key itself isn't stored. Use a
+current Chrome, Edge or Firefox: the cookie is `Secure`, which those browsers allow on
+`http://localhost`.
+
+Unless `PHOTOSYNC_SESSION_SECRET` is set, restarting the API signs you out.
 
 ### Keeping data across restarts (DynamoDB Local)
 
@@ -188,7 +192,8 @@ run the same storage stack as on AWS.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `PHOTOSYNC_API_KEY` | *(required)* | Owner API key for the CLI and web UI |
+| `PHOTOSYNC_API_KEY` | *(required)* | Owner API key for the CLI and web UI; the server keeps only its SHA-256 hash |
+| `PHOTOSYNC_SESSION_SECRET` | *(random per process)* | Signs browser session cookies; at least 32 bytes |
 | `PHOTOSYNC_ADDR` | `localhost:8080` | Listen address |
 | `PHOTOSYNC_BASE_URL` | `http://<addr>` | Externally reachable origin, used in signed image/upload URLs |
 | `PHOTOSYNC_DATA_DIR` | `data` | Where preview images are stored in disk mode |
@@ -254,8 +259,16 @@ go test ./internal/preview -run TestRealRaws -v
   store a large object until it expires.
 - The owner UI is served with a strict Content Security Policy, `no-referrer` and
   `noindex`, and never inserts user-supplied text as HTML.
-- The API key in the web UI is a local-development measure; a proper owner login is planned
-  for deployment.
+- Owner authentication: the uploader sends the API key as `Authorization: Bearer`; the
+  browser trades it once (`POST /api/login`) for a signed, expiring session cookie
+  (`HttpOnly`, `Secure`, `SameSite=Strict`). The server stores only the key's SHA-256
+  hash and compares in constant time. Use a long random key, e.g. in PowerShell:
+  `$b = New-Object byte[] 32; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); [Convert]::ToBase64String($b)`.
+- Session cookies are stateless: logging out deletes the cookie, but a copy taken earlier
+  stays valid until it expires (7 days). Changing the session secret signs every browser
+  out.
+- Cross-site requests that would change state (e.g. a form on another site posting to
+  the API) are rejected using Go's `http.CrossOriginProtection`.
 
 ## Roadmap
 

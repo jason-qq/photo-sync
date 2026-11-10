@@ -3,13 +3,15 @@
 package server
 
 import (
-	"crypto/subtle"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"photo-sync/internal/api"
 	"photo-sync/internal/review"
@@ -21,16 +23,26 @@ const maxBodySize = 1 << 20
 // Config holds the server's dependencies.
 type Config struct {
 	Service *review.Service
-	APIKey  string       // owner API key, sent as "Authorization: Bearer <key>"
-	Logger  *slog.Logger // defaults to slog.Default()
+	// APIKeyHash is HashAPIKey(owner API key). Clients send the key as
+	// "Authorization: Bearer <key>", or exchange it for a session cookie.
+	APIKeyHash []byte
+	// SessionSecret signs session cookies; at least MinSessionSecretLen
+	// bytes, and the same on every instance.
+	SessionSecret []byte
+	SessionTTL    time.Duration    // defaults to DefaultSessionTTL
+	Logger        *slog.Logger     // defaults to slog.Default()
+	Now           func() time.Time // defaults to time.Now
 }
 
 // Server is an http.Handler serving the API routes.
 type Server struct {
-	svc    *review.Service
-	apiKey []byte
-	log    *slog.Logger
-	mux    *http.ServeMux
+	svc           *review.Service
+	apiKeyHash    []byte
+	sessionSecret []byte
+	sessionTTL    time.Duration
+	log           *slog.Logger
+	now           func() time.Time
+	mux           *http.ServeMux
 }
 
 // New returns a Server. It returns an error if required config is missing.
@@ -38,23 +50,37 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Service == nil {
 		return nil, errors.New("server: Service is required")
 	}
-	if cfg.APIKey == "" {
-		return nil, errors.New("server: APIKey is required")
+	if len(cfg.APIKeyHash) != sha256.Size {
+		return nil, errors.New("server: APIKeyHash must be a SHA-256 hash")
+	}
+	if len(cfg.SessionSecret) < MinSessionSecretLen {
+		return nil, fmt.Errorf("server: SessionSecret must be at least %d bytes", MinSessionSecretLen)
 	}
 	s := &Server{
-		svc:    cfg.Service,
-		apiKey: []byte(cfg.APIKey),
-		log:    cfg.Logger,
-		mux:    http.NewServeMux(),
+		svc:           cfg.Service,
+		apiKeyHash:    cfg.APIKeyHash,
+		sessionSecret: cfg.SessionSecret,
+		sessionTTL:    cfg.SessionTTL,
+		log:           cfg.Logger,
+		now:           cfg.Now,
+		mux:           http.NewServeMux(),
+	}
+	if s.sessionTTL == 0 {
+		s.sessionTTL = DefaultSessionTTL
 	}
 	if s.log == nil {
 		s.log = slog.Default()
+	}
+	if s.now == nil {
+		s.now = time.Now
 	}
 	s.routes()
 	return s, nil
 }
 
 func (s *Server) routes() {
+	s.mux.Handle(api.RouteLogin, s.handle(s.login))
+	s.mux.Handle(api.RouteLogout, s.handle(s.logout))
 	s.mux.Handle(api.RouteCreateSession, s.requireOwner(s.handle(s.createSession)))
 	s.mux.Handle(api.RouteListSessions, s.requireOwner(s.handle(s.listSessions)))
 	s.mux.Handle(api.RouteCreatePhoto, s.requireOwner(s.handle(s.createPhoto)))
@@ -79,16 +105,50 @@ func (s *Server) handle(h handlerFunc) http.Handler {
 	})
 }
 
-// requireOwner rejects requests without the owner API key.
+// requireOwner rejects requests that don't carry the owner API key
+// (Authorization: Bearer, used by the CLI) or a valid session cookie (used
+// by the browser). If an Authorization header is present it alone decides;
+// a bad key isn't rescued by a cookie.
 func (s *Server) requireOwner(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		key, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if !ok || subtle.ConstantTimeCompare([]byte(key), s.apiKey) != 1 {
-			writeError(w, http.StatusUnauthorized, "unauthorized")
+		if s.isOwner(r) {
+			next.ServeHTTP(w, r)
 			return
 		}
-		next.ServeHTTP(w, r)
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 	})
+}
+
+func (s *Server) isOwner(r *http.Request) bool {
+	if h := r.Header.Get("Authorization"); h != "" {
+		key, ok := strings.CutPrefix(h, "Bearer ")
+		return ok && s.validKey(key)
+	}
+	c, err := r.Cookie(SessionCookie)
+	return err == nil && s.validSession(c.Value)
+}
+
+// login handles api.RouteLogin: exchanges the API key for a session cookie.
+func (s *Server) login(w http.ResponseWriter, r *http.Request) error {
+	var req api.LoginRequest
+	if err := decodeAndValidate(w, r, &req); err != nil {
+		return err
+	}
+	if !s.validKey(req.APIKey) {
+		return &httpError{http.StatusUnauthorized, "invalid API key"}
+	}
+	exp := s.now().Add(s.sessionTTL)
+	http.SetCookie(w, sessionCookie(s.newSession(exp), int(s.sessionTTL.Seconds())))
+	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
+// logout handles api.RouteLogout: deletes the session cookie. The cookie
+// is stateless, so a copy taken earlier stays valid until it expires.
+func (s *Server) logout(w http.ResponseWriter, r *http.Request) error {
+	http.SetCookie(w, sessionCookie("", -1))
+	w.WriteHeader(http.StatusNoContent)
+	return nil
 }
 
 // httpError is an error with a status code and a client-safe message, for

@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"photo-sync/internal/api"
+	"photo-sync/internal/server"
 	"photo-sync/internal/testserver"
 )
 
@@ -61,6 +62,81 @@ func (e *env) do(method, path, key string, body any, out any) int {
 		}
 	}
 	return resp.StatusCode
+}
+
+// send sends a request with optional Authorization header and cookie and
+// returns the response (body closed).
+func (e *env) send(method, path, body, auth string, cookie *http.Cookie) *http.Response {
+	e.t.Helper()
+	req, _ := http.NewRequest(method, e.url+path, strings.NewReader(body))
+	if auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	if cookie != nil {
+		req.AddCookie(cookie)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	resp.Body.Close()
+	return resp
+}
+
+func sessionCookieFrom(resp *http.Response) *http.Cookie {
+	for _, c := range resp.Cookies() {
+		if c.Name == server.SessionCookie {
+			return c
+		}
+	}
+	return nil
+}
+
+func TestBrowserLogin(t *testing.T) {
+	e := newEnv(t)
+
+	// Wrong key: 401 and no cookie.
+	resp := e.send("POST", "/api/login", `{"apiKey":"wrong"}`, "", nil)
+	if resp.StatusCode != http.StatusUnauthorized || sessionCookieFrom(resp) != nil {
+		t.Fatalf("wrong key: %d, cookie %v", resp.StatusCode, sessionCookieFrom(resp))
+	}
+	if code := e.send("POST", "/api/login", `{}`, "", nil).StatusCode; code != http.StatusBadRequest {
+		t.Errorf("missing key: %d, want 400", code)
+	}
+
+	// Right key: 204 and a hardened cookie.
+	resp = e.send("POST", "/api/login", `{"apiKey":"`+testKey+`"}`, "", nil)
+	c := sessionCookieFrom(resp)
+	if resp.StatusCode != http.StatusNoContent || c == nil {
+		t.Fatalf("login: %d, cookie %v", resp.StatusCode, c)
+	}
+	if !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteStrictMode || c.Path != "/" || c.MaxAge <= 0 {
+		t.Errorf("cookie attributes: %+v", c)
+	}
+	if strings.Contains(c.Value, testKey) {
+		t.Error("cookie contains the API key")
+	}
+
+	// The cookie authorizes owner routes.
+	if code := e.send("GET", "/api/sessions", "", "", c).StatusCode; code != http.StatusOK {
+		t.Errorf("GET with cookie: %d, want 200", code)
+	}
+	// A present but wrong Authorization header isn't rescued by the cookie.
+	if code := e.send("GET", "/api/sessions", "", "Bearer wrong", c).StatusCode; code != http.StatusUnauthorized {
+		t.Errorf("bad bearer + cookie: %d, want 401", code)
+	}
+	// A tampered cookie is rejected.
+	forged := *c
+	forged.Value = strings.Replace(c.Value, "v1.", "v1.9", 1)
+	if code := e.send("GET", "/api/sessions", "", "", &forged).StatusCode; code != http.StatusUnauthorized {
+		t.Errorf("forged cookie: %d, want 401", code)
+	}
+
+	// Logout deletes the cookie.
+	resp = e.send("POST", "/api/logout", "", "", c)
+	if gone := sessionCookieFrom(resp); resp.StatusCode != http.StatusNoContent || gone == nil || gone.MaxAge >= 0 {
+		t.Errorf("logout: %d, cookie %+v (want deletion)", resp.StatusCode, gone)
+	}
 }
 
 func (e *env) upload(url string) {

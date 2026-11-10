@@ -8,7 +8,9 @@
 //
 // Environment:
 //
-//	PHOTOSYNC_API_KEY            owner API key (required)
+//	PHOTOSYNC_API_KEY            owner API key (required); only its hash is kept
+//	PHOTOSYNC_SESSION_SECRET     signs browser session cookies, >= 32 bytes
+//	                             (default: random per process)
 //	PHOTOSYNC_ADDR               listen address (default localhost:8080)
 //	PHOTOSYNC_BASE_URL           externally reachable origin (default http://<addr>)
 //	PHOTOSYNC_DATA_DIR           local blob directory (default ./data)
@@ -46,6 +48,7 @@ import (
 
 	"photo-sync/internal/app"
 	"photo-sync/internal/blob"
+	"photo-sync/internal/server"
 	"photo-sync/internal/store"
 )
 
@@ -73,7 +76,12 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	handler, err := app.New(app.Config{APIKey: apiKey, Store: st, Blobs: blobs})
+	handler, err := app.New(app.Config{
+		APIKeyHash:    server.HashAPIKey(apiKey),
+		SessionSecret: sessionSecret(),
+		Store:         st,
+		Blobs:         blobs,
+	})
 	if err != nil {
 		return err
 	}
@@ -104,6 +112,18 @@ func run() error {
 		defer cancel()
 		return hs.Shutdown(shutdownCtx)
 	}
+}
+
+// sessionSecret returns PHOTOSYNC_SESSION_SECRET, or a random per-process
+// secret if it isn't set (browser sessions then end when the API restarts).
+func sessionSecret() []byte {
+	if s := os.Getenv("PHOTOSYNC_SESSION_SECRET"); s != "" {
+		return []byte(s) // server.New rejects one that is too short
+	}
+	secret := make([]byte, 32)
+	rand.Read(secret)
+	slog.Info("session secret: random per process (sign-ins end on restart)")
+	return secret
 }
 
 // openStore returns the store selected by the environment.

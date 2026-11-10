@@ -23,6 +23,17 @@ func (e *ValidationError) Error() string { return e.Field + ": " + e.Message }
 
 func invalid(field, msg string) error { return &ValidationError{field, msg} }
 
+// MaxAPIKeyLen bounds the key accepted by login (real keys are far shorter).
+const MaxAPIKeyLen = 1024
+
+// Validate checks r.
+func (r LoginRequest) Validate() error {
+	if r.APIKey == "" || len(r.APIKey) > MaxAPIKeyLen {
+		return invalid("apiKey", "required, at most 1024 bytes")
+	}
+	return nil
+}
+
 // Validate checks r. Title is checked after trimming whitespace; callers
 // should store strings.TrimSpace(r.Title).
 func (r CreateSessionRequest) Validate() error {
