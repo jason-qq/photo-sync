@@ -5,8 +5,8 @@ raw files, then share a link so the model can mark photos accept/reject/stars. *
 never leave your machine.** Only resized, metadata-stripped JPEG previews are uploaded.
 
 > **Status:** works end to end locally: uploader, API, owner web UI, plus DynamoDB and S3
-> storage (tested against local emulators in Docker). Not yet built: AWS deployment,
-> reviewer links and feedback.
+> storage (tested against local emulators in Docker). AWS deployment (Lambda + API
+> Gateway) is scripted with SAM. Not yet built: reviewer links and feedback.
 
 ## How it works
 
@@ -56,7 +56,8 @@ An HTTP server that owns all state. It:
   download URLs that mimic S3 presigned URLs. With S3 configured this route doesn't exist;
   URLs point at the bucket instead.
 
-It is designed to run on AWS Lambda later. Locally it is a plain HTTP server.
+Locally it is a plain HTTP server. On AWS the same app runs as a Lambda function,
+`cmd/lambda`, behind an API Gateway HTTP API (see [Deploying to AWS](#deploying-to-aws)).
 
 ### Uploader CLI: `cmd/uploader`
 
@@ -89,6 +90,7 @@ Runs on the photographer's machine against one folder of raw files (Sony `.ARW`,
 | `internal/blob` | Object storage interface (presigned PUT/GET) with `Local` (disk) and `S3` implementations |
 | `internal/model` | Domain types (`Session`, `Photo`) and ID generation (ULIDs) |
 | `internal/ui` | Owner web UI: static HTML/CSS/JS embedded into the binary |
+| `internal/lambdahttp` | Runs an `http.Handler` on Lambda: translates API Gateway events to HTTP requests and back |
 | `internal/uploader` | The uploader's pipeline: scan, hash, preview, upload, manifest |
 | `internal/apiclient` | Go client for the API, used by the uploader |
 | `internal/preview` | Raw file → thumbnail + preview JPEGs (orientation-corrected, EXIF stripped) |
@@ -186,6 +188,76 @@ go run ./cmd/api
 The API creates the bucket on first start. Combine with the DynamoDB variables above to
 run the same storage stack as on AWS.
 
+## Deploying to AWS
+
+The stack is defined in [`deploy/template.yaml`](deploy/template.yaml) (AWS SAM) and
+deployed from your machine with [`deploy/deploy.ps1`](deploy/deploy.ps1). No CI pipeline
+is needed.
+
+```
+browser / uploader ──HTTPS──▶ API Gateway (HTTP API) ──▶ Lambda (cmd/lambda) ──▶ DynamoDB
+        │                                                     │
+        └──── presigned URLs (images, uploads) ──▶ S3 bucket ◀─┘ (signs URLs)
+                                                              └──▶ SSM Parameter Store
+                                                                   (API key hash, session secret)
+```
+
+| Resource | Notes |
+|---|---|
+| API Gateway HTTP API | Single catch-all route to the function; throttled to 20 req/s (burst 50); access logs (paths only) |
+| Lambda | `provided.al2023`, arm64, 256 MB; least-privilege role for exactly the table, bucket and two parameters |
+| DynamoDB table | On-demand; same layout as `store.CreateTable` (incl. LSI1) |
+| S3 bucket | Private (all public access blocked, HTTPS only), previews expire after 90 days |
+| SSM parameters | `/photosync/api-key-hash`, `/photosync/session-secret` (SecureString), created by the script |
+
+The table and bucket are kept (`DeletionPolicy: Retain`) if the stack is deleted, so data
+survives a `sam delete`; remove them by hand if you really want them gone.
+
+### One-time setup
+
+1. Install the [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)
+   and [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)
+   (or `winget install Amazon.AWSCLI` / `winget install Amazon.SAM-CLI`), then open a new
+   terminal.
+2. Configure credentials for your account
+   ([guide](https://docs.aws.amazon.com/cli/latest/userguide/cli-chap-configure.html)):
+   `aws configure sso` (IAM Identity Center, recommended) or `aws configure` (IAM user
+   access keys). Don't use the root user. Pick the region to deploy to.
+3. Check: `aws sts get-caller-identity` shows the intended account.
+
+### Deploy
+
+```powershell
+.\deploy\deploy.ps1
+```
+
+If Windows refuses with "running scripts is disabled on this system", allow local scripts
+once for your user with `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, or run
+`powershell -ExecutionPolicy Bypass -File .\deploy\deploy.ps1` for a single run.
+
+The script prints the target account and region, creates the two secrets if missing
+(**printing a newly generated API key once**; store it in a password manager), builds the
+Lambda binary, and runs `sam deploy`. The first run is guided (accept the defaults; answer
+**y** to the IAM role question) and saves your answers to `deploy/samconfig.toml`. Every
+run shows the CloudFormation change set and asks before applying it. At the end it prints
+the app URL.
+
+Then:
+
+```powershell
+$env:PHOTOSYNC_API_URL = "https://<id>.execute-api.<region>.amazonaws.com"
+$env:PHOTOSYNC_API_KEY = "<the key printed by the script>"
+go run ./cmd/uploader "D:\Shoots\2026-11-09 Ana"
+```
+
+and open the URL in a browser to sign in.
+
+Options: `-NewApiKey` rotates the owner API key, `-AwsProfile <name>` uses a named CLI
+profile, `-Region <region>` overrides the region, `-Guided` re-runs the SAM questions.
+
+To remove the app: `sam delete --stack-name photosync` (from `deploy/`). The table, bucket
+and SSM parameters stay until you delete them.
+
 ## Configuration
 
 ### API (`cmd/api`)
@@ -272,6 +344,5 @@ go test ./internal/preview -run TestRealRaws -v
 
 ## Roadmap
 
-1. AWS deployment (Lambda + API Gateway, DynamoDB, S3)
-2. Reviewer links (expiring capability URLs), reviewer UI, accept/reject/stars/comments
-3. Export of keepers (filename list) and, later, writing ratings back to raw metadata
+1. Reviewer links (expiring capability URLs), reviewer UI, accept/reject/stars/comments
+2. Export of keepers (filename list) and, later, writing ratings back to raw metadata

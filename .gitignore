@@ -33,3 +33,8 @@ go.work.sum
 
 # Local API blob storage
 /data/
+# Lambda build output and SAM artifacts
+/build/
+/deploy/.aws-sam/
+# Account-specific SAM settings written by `sam deploy --guided`
+/deploy/samconfig.toml
