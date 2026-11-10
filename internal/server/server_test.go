@@ -1,47 +1,31 @@
-package server
+// Tests are in an external package so they can run the API through the
+// same wiring as cmd/api (testserver → app → server) without an import
+// cycle.
+package server_test
 
 import (
 	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"photo-sync/internal/api"
-	"photo-sync/internal/blob"
-	"photo-sync/internal/review"
-	"photo-sync/internal/store"
+	"photo-sync/internal/testserver"
 )
 
-const testKey = "test-api-key"
+const testKey = testserver.APIKey
 
-// env runs the API and a Local blob store behind one test server, like
-// cmd/api does in local mode.
+// env is the full local app (API + Local blob store) on a test server.
 type env struct {
-	t  *testing.T
-	ts *httptest.Server
+	t   *testing.T
+	url string
 }
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	mux := http.NewServeMux()
-	ts := httptest.NewServer(mux)
-	t.Cleanup(ts.Close)
-
-	blobs := blob.NewLocal(t.TempDir(), ts.URL, []byte("secret"))
-	svc, err := review.New(review.Config{Store: store.NewMemory(), Blobs: blobs})
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv, err := New(Config{Service: svc, APIKey: testKey})
-	if err != nil {
-		t.Fatal(err)
-	}
-	mux.Handle("/", srv)
-	mux.Handle(blob.LocalPathPrefix+"{key...}", blobs)
-	return &env{t, ts}
+	return &env{t, testserver.Start(t).URL}
 }
 
 // call sends an authenticated JSON request and decodes the JSON response
@@ -62,7 +46,7 @@ func (e *env) do(method, path, key string, body any, out any) int {
 		buf, _ := json.Marshal(b)
 		rdr = bytes.NewReader(buf)
 	}
-	req, _ := http.NewRequest(method, e.ts.URL+path, rdr)
+	req, _ := http.NewRequest(method, e.url+path, rdr)
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}

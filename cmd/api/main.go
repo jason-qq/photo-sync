@@ -34,7 +34,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"sync"
@@ -45,11 +44,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 
+	"photo-sync/internal/app"
 	"photo-sync/internal/blob"
-	"photo-sync/internal/review"
-	"photo-sync/internal/server"
 	"photo-sync/internal/store"
-	"photo-sync/internal/ui"
 )
 
 func main() {
@@ -76,31 +73,14 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	svc, err := review.New(review.Config{Store: st, Blobs: blobs})
+	handler, err := app.New(app.Config{APIKey: apiKey, Store: st, Blobs: blobs})
 	if err != nil {
 		return err
 	}
-	srv, err := server.New(server.Config{Service: svc, APIKey: apiKey})
-	if err != nil {
-		return err
-	}
-	// The UI's CSP must allow images from wherever the blob store's view
-	// URLs point (baseURL for Local, the bucket's host for S3).
-	imageOrigin, err := urlOrigin(blobs)
-	if err != nil {
-		return err
-	}
-
-	mux := http.NewServeMux()
-	mux.Handle("/api/", srv)
-	if local, ok := blobs.(*blob.Local); ok {
-		mux.Handle(blob.LocalPathPrefix+"{key...}", local)
-	}
-	mux.Handle("/", ui.Handler(ui.Config{ImageOrigins: []string{imageOrigin}}))
 
 	hs := &http.Server{
 		Addr:              addr,
-		Handler:           logRequests(mux),
+		Handler:           logRequests(handler),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       2 * time.Minute, // uploads
 		WriteTimeout:      2 * time.Minute,
@@ -203,19 +183,6 @@ var awsConfig = sync.OnceValues(func() (aws.Config, error) {
 	}
 	return cfg, nil
 })
-
-// urlOrigin returns the scheme://host that blobs' view URLs point at.
-func urlOrigin(blobs blob.Store) (string, error) {
-	raw, err := blobs.PresignGet(context.Background(), "origin-probe.jpg", time.Minute)
-	if err != nil {
-		return "", err
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return "", fmt.Errorf("parse blob URL: %w", err)
-	}
-	return u.Scheme + "://" + u.Host, nil
-}
 
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {

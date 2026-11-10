@@ -81,6 +81,7 @@ Runs on the photographer's machine against one folder of raw files (Sony `.ARW`,
 
 | Package | Purpose |
 |---|---|
+| `internal/app` | Composition root: builds the whole HTTP app (API, UI, local blob route) from a store and blob store |
 | `internal/api` | Wire contract shared by server and clients: routes, request/response types, validation |
 | `internal/server` | HTTP layer: routing, auth, JSON, mapping errors to status codes |
 | `internal/review` | Use cases and business rules (dedupe, upload confirmation, listing); no HTTP |
@@ -95,7 +96,9 @@ Runs on the photographer's machine against one folder of raw files (Sony `.ARW`,
 | `internal/testserver` | Starts the full local API stack for client-side tests |
 
 Layering in the API: `server` → `review` → `store` / `blob`. Swapping memory for DynamoDB
-(or disk for S3) doesn't touch the HTTP or business-rule code.
+(or disk for S3) doesn't touch the HTTP or business-rule code. Dependencies are wired by
+hand (no DI container): `cmd/api` picks the implementations from the environment and
+passes them to `app.New`, which tests use too.
 
 ## Running locally
 
