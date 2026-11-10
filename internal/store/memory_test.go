@@ -105,6 +105,29 @@ func TestNotFound(t *testing.T) {
 	}
 }
 
+func TestListSessions(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemory()
+
+	got, err := m.ListSessions(ctx)
+	if err != nil || got == nil || len(got) != 0 {
+		t.Fatalf("empty store: %v, %v (want non-nil empty slice)", got, err)
+	}
+
+	want := []string{newSession(t, m), newSession(t, m), newSession(t, m)}
+	got, err = m.ListSessions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, s := range got {
+		ids = append(ids, s.ID)
+	}
+	if !slices.Equal(ids, want) {
+		t.Errorf("IDs = %v, want %v (creation order)", ids, want)
+	}
+}
+
 func TestListPhotos(t *testing.T) {
 	ctx := context.Background()
 	m := NewMemory()

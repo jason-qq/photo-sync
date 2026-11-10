@@ -56,6 +56,7 @@ func New(cfg Config) (*Server, error) {
 
 func (s *Server) routes() {
 	s.mux.Handle(api.RouteCreateSession, s.requireOwner(s.handle(s.createSession)))
+	s.mux.Handle(api.RouteListSessions, s.requireOwner(s.handle(s.listSessions)))
 	s.mux.Handle(api.RouteCreatePhoto, s.requireOwner(s.handle(s.createPhoto)))
 	s.mux.Handle(api.RouteListPhotos, s.requireOwner(s.handle(s.listPhotos)))
 	s.mux.Handle(api.RouteCompletePhoto, s.requireOwner(s.handle(s.completePhoto)))

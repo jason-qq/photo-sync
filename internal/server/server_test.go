@@ -165,6 +165,27 @@ func TestUploadFlow(t *testing.T) {
 	}
 }
 
+func TestListSessions(t *testing.T) {
+	e := newEnv(t)
+
+	var raw map[string]json.RawMessage
+	if code := e.call("GET", "/api/sessions", nil, &raw); code != http.StatusOK {
+		t.Fatalf("list empty: %d", code)
+	}
+	if got := string(raw["sessions"]); got != "[]" {
+		t.Errorf("empty sessions = %s, want []", got)
+	}
+
+	sid := e.createSession()
+	var list api.ListSessionsResponse
+	if code := e.call("GET", "/api/sessions", nil, &list); code != http.StatusOK {
+		t.Fatalf("list: %d", code)
+	}
+	if len(list.Sessions) != 1 || list.Sessions[0].ID != sid || list.Sessions[0].Title != "Shoot" {
+		t.Errorf("sessions = %+v", list.Sessions)
+	}
+}
+
 func TestListPhotos(t *testing.T) {
 	e := newEnv(t)
 	sid := e.createSession()
@@ -229,6 +250,9 @@ func TestAuth(t *testing.T) {
 	for _, key := range []string{"", "wrong-key"} {
 		if code := e.do("POST", "/api/sessions", key, body, nil); code != http.StatusUnauthorized {
 			t.Errorf("key %q: status %d, want 401", key, code)
+		}
+		if code := e.do("GET", "/api/sessions", key, nil, nil); code != http.StatusUnauthorized {
+			t.Errorf("list sessions, key %q: status %d, want 401", key, code)
 		}
 		if code := e.do("GET", "/api/sessions/any/photos", key, nil, nil); code != http.StatusUnauthorized {
 			t.Errorf("list photos, key %q: status %d, want 401", key, code)

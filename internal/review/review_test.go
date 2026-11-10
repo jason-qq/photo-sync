@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -208,6 +209,47 @@ func TestCompletePhotoErrors(t *testing.T) {
 			t.Errorf("err = %v, want wrapped boom", err)
 		}
 	})
+}
+
+func TestListSessions(t *testing.T) {
+	ctx := context.Background()
+	now := fixedNow
+	svc, err := New(Config{
+		Store: store.NewMemory(),
+		Blobs: &fakeBlobs{},
+		Now:   func() time.Time { now = now.Add(time.Second); return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	empty, err := svc.ListSessions(ctx)
+	if err != nil || empty == nil || len(empty) != 0 {
+		t.Fatalf("no sessions: %v, %v (want non-nil empty slice)", empty, err)
+	}
+
+	mk := func(title, date string) {
+		if _, err := svc.CreateSession(ctx, title, date); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("older", "2026-10-01")
+	mk("newest-first", "2026-11-09")
+	mk("newest-second", "2026-11-09")
+	mk("middle", "2026-11-01")
+
+	got, err := svc.ListSessions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var titles []string
+	for _, s := range got {
+		titles = append(titles, s.Title)
+	}
+	want := []string{"newest-second", "newest-first", "middle", "older"}
+	if !slices.Equal(titles, want) {
+		t.Errorf("order = %v, want %v", titles, want)
+	}
 }
 
 // readyPhoto registers a photo and marks it ready.

@@ -18,6 +18,7 @@ import (
 // Routes, as used in the server's mux patterns.
 const (
 	RouteCreateSession = "POST /api/sessions"
+	RouteListSessions  = "GET /api/sessions"
 	RouteCreatePhoto   = "POST /api/sessions/{sid}/photos"
 	RouteListPhotos    = "GET /api/sessions/{sid}/photos"
 	RouteCompletePhoto = "POST /api/sessions/{sid}/photos/{pid}/complete"
@@ -27,7 +28,7 @@ const (
 // an existing photo so its renditions can be overwritten.
 const QueryForce = "force"
 
-// SessionsPath is the path for RouteCreateSession.
+// SessionsPath is the path for RouteCreateSession and RouteListSessions.
 func SessionsPath() string { return "/api/sessions" }
 
 // PhotosPath is the path for RouteCreatePhoto and RouteListPhotos.
@@ -56,6 +57,14 @@ type Session struct {
 	Title     string    `json:"title"`
 	Date      string    `json:"date"` // YYYY-MM-DD
 	CreatedAt time.Time `json:"createdAt"`
+}
+
+// ListSessionsResponse is the body of GET /api/sessions.
+//
+// Responses: 200 ListSessionsResponse.
+type ListSessionsResponse struct {
+	// Sessions are sorted by Date, newest first. Never null.
+	Sessions []Session `json:"sessions"`
 }
 
 // CreatePhotoRequest is the body of POST /api/sessions/{sid}/photos.

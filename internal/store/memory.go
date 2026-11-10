@@ -50,6 +50,17 @@ func (m *Memory) GetSession(_ context.Context, id string) (model.Session, error)
 	return s, nil
 }
 
+func (m *Memory) ListSessions(_ context.Context) ([]model.Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sessions := make([]model.Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		sessions = append(sessions, s)
+	}
+	slices.SortFunc(sessions, func(a, b model.Session) int { return strings.Compare(a.ID, b.ID) })
+	return sessions, nil
+}
+
 func (m *Memory) CreatePhoto(_ context.Context, p model.Photo) (model.Photo, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

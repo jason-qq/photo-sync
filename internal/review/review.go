@@ -86,6 +86,22 @@ func (s *Service) CreateSession(ctx context.Context, title, date string) (model.
 	return sess, nil
 }
 
+// ListSessions returns all sessions, most recent shoot date first (ties
+// broken by most recently created).
+func (s *Service) ListSessions(ctx context.Context) ([]model.Session, error) {
+	sessions, err := s.store.ListSessions(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	slices.SortStableFunc(sessions, func(a, b model.Session) int {
+		if c := strings.Compare(b.Date, a.Date); c != 0 {
+			return c
+		}
+		return b.CreatedAt.Compare(a.CreatedAt)
+	})
+	return sessions, nil
+}
+
 // Uploads holds presigned URLs for uploading a photo's renditions.
 type Uploads struct {
 	Thumb   string

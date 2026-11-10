@@ -22,6 +22,20 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+// listSessions handles api.RouteListSessions.
+func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) error {
+	sessions, err := s.svc.ListSessions(r.Context())
+	if err != nil {
+		return err
+	}
+	resp := api.ListSessionsResponse{Sessions: make([]api.Session, len(sessions))}
+	for i, sess := range sessions {
+		resp.Sessions[i] = toAPISession(sess)
+	}
+	writeJSON(w, http.StatusOK, resp)
+	return nil
+}
+
 // createPhoto handles api.RouteCreatePhoto.
 func (s *Server) createPhoto(w http.ResponseWriter, r *http.Request) error {
 	var req api.CreatePhotoRequest

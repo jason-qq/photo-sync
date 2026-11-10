@@ -1,5 +1,6 @@
-// Command api runs the photo review API as a local HTTP server, using the
-// in-memory store and disk-backed blob storage.
+// Command api runs the photo review API and owner web UI as a local HTTP
+// server, using the in-memory store and disk-backed blob storage. Open the
+// base URL in a browser and sign in with the API key.
 //
 // Environment:
 //
@@ -23,6 +24,7 @@ import (
 	"photo-sync/internal/review"
 	"photo-sync/internal/server"
 	"photo-sync/internal/store"
+	"photo-sync/internal/ui"
 )
 
 func main() {
@@ -57,8 +59,11 @@ func run() error {
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/", srv)
+	mux.Handle("/api/", srv)
 	mux.Handle(blob.LocalPathPrefix+"{key...}", blobs)
+	// Images come from the blob URLs, which use baseURL; allow it in case
+	// the UI is opened via a different host name (e.g. 127.0.0.1).
+	mux.Handle("/", ui.Handler(ui.Config{ImageOrigins: []string{baseURL}}))
 
 	hs := &http.Server{
 		Addr:              addr,

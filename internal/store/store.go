@@ -21,6 +21,8 @@ var (
 type Store interface {
 	CreateSession(ctx context.Context, s model.Session) error
 	GetSession(ctx context.Context, id string) (model.Session, error)
+	// ListSessions returns all sessions in ID (creation) order.
+	ListSessions(ctx context.Context) ([]model.Session, error)
 
 	// CreatePhoto stores p unless the session already has a photo with the
 	// same Hash. In that case it returns the existing photo and created=false.
