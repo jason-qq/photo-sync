@@ -19,6 +19,7 @@ import (
 const (
 	RouteCreateSession = "POST /api/sessions"
 	RouteCreatePhoto   = "POST /api/sessions/{sid}/photos"
+	RouteListPhotos    = "GET /api/sessions/{sid}/photos"
 	RouteCompletePhoto = "POST /api/sessions/{sid}/photos/{pid}/complete"
 )
 
@@ -29,7 +30,7 @@ const QueryForce = "force"
 // SessionsPath is the path for RouteCreateSession.
 func SessionsPath() string { return "/api/sessions" }
 
-// PhotosPath is the path for RouteCreatePhoto.
+// PhotosPath is the path for RouteCreatePhoto and RouteListPhotos.
 func PhotosPath(sessionID string) string {
 	return "/api/sessions/" + url.PathEscape(sessionID) + "/photos"
 }
@@ -97,6 +98,34 @@ type PhotoResponse struct {
 	PhotoID    string      `json:"photoId"`
 	Status     PhotoStatus `json:"status"`
 	UploadURLs *UploadURLs `json:"uploadUrls,omitempty"`
+}
+
+// ListPhotosResponse is the body of GET /api/sessions/{sid}/photos. It is an
+// object (not a bare array) so per-session data such as feedback can be
+// added later without breaking clients.
+//
+// Responses: 200 ListPhotosResponse; 404 session not found.
+type ListPhotosResponse struct {
+	// Photos are sorted by Filename. Never null.
+	Photos []Photo `json:"photos"`
+}
+
+// Photo is a photo as the owner sees it.
+type Photo struct {
+	ID        string      `json:"id"`
+	Filename  string      `json:"filename"`
+	Hash      string      `json:"hash"`
+	Status    PhotoStatus `json:"status"`
+	CreatedAt time.Time   `json:"createdAt"`
+	// Images is present only when Status is ready.
+	Images *ImageURLs `json:"images,omitempty"`
+}
+
+// ImageURLs are presigned URLs for viewing a photo's renditions via HTTP
+// GET. They expire (about an hour); re-fetch the list to get fresh ones.
+type ImageURLs struct {
+	Thumb   string `json:"thumb"`
+	Preview string `json:"preview"`
 }
 
 // POST /api/sessions/{sid}/photos/{pid}/complete has no body. It verifies

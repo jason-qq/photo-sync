@@ -28,5 +28,9 @@ type Store interface {
 	// doesn't exist.
 	CreatePhoto(ctx context.Context, p model.Photo) (stored model.Photo, created bool, err error)
 	GetPhoto(ctx context.Context, sessionID, photoID string) (model.Photo, error)
+	// ListPhotos returns all photos in a session, in ID order (which is
+	// creation order, since IDs are ULIDs). Returns ErrNotFound if the
+	// session doesn't exist.
+	ListPhotos(ctx context.Context, sessionID string) ([]model.Photo, error)
 	SetPhotoStatus(ctx context.Context, sessionID, photoID string, status model.PhotoStatus) error
 }

@@ -58,7 +58,7 @@ func run() error {
 
 	mux := http.NewServeMux()
 	mux.Handle("/", srv)
-	mux.Handle("PUT "+blob.LocalPathPrefix+"{key...}", blobs)
+	mux.Handle(blob.LocalPathPrefix+"{key...}", blobs)
 
 	hs := &http.Server{
 		Addr:              addr,

@@ -1,5 +1,6 @@
 // Package review implements the photo review use cases: creating sessions,
-// registering photos (with per-session dedupe), and confirming uploads.
+// registering photos (with per-session dedupe), confirming uploads, and
+// listing a session's photos for the owner.
 //
 // It owns the business rules and knows nothing about HTTP or JSON. Inputs
 // are assumed to have passed wire-level validation (internal/api).
@@ -9,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -17,8 +19,13 @@ import (
 	"photo-sync/internal/store"
 )
 
-// DefaultUploadTTL is how long presigned upload URLs stay valid.
-const DefaultUploadTTL = 15 * time.Minute
+const (
+	// DefaultUploadTTL is how long presigned upload URLs stay valid.
+	DefaultUploadTTL = 15 * time.Minute
+	// DefaultViewTTL is how long presigned image (download) URLs stay
+	// valid. Long enough to browse a session without reloading.
+	DefaultViewTTL = time.Hour
+)
 
 // Errors returned by Service. Messages are safe to show to clients.
 var (
@@ -34,6 +41,7 @@ type Config struct {
 	Store     store.Store
 	Blobs     blob.Store
 	UploadTTL time.Duration    // defaults to DefaultUploadTTL
+	ViewTTL   time.Duration    // defaults to DefaultViewTTL
 	Now       func() time.Time // defaults to time.Now
 }
 
@@ -42,6 +50,7 @@ type Service struct {
 	store     store.Store
 	blobs     blob.Store
 	uploadTTL time.Duration
+	viewTTL   time.Duration
 	now       func() time.Time
 }
 
@@ -50,9 +59,12 @@ func New(cfg Config) (*Service, error) {
 	if cfg.Store == nil || cfg.Blobs == nil {
 		return nil, errors.New("review: Store and Blobs are required")
 	}
-	s := &Service{store: cfg.Store, blobs: cfg.Blobs, uploadTTL: cfg.UploadTTL, now: cfg.Now}
+	s := &Service{store: cfg.Store, blobs: cfg.Blobs, uploadTTL: cfg.UploadTTL, viewTTL: cfg.ViewTTL, now: cfg.Now}
 	if s.uploadTTL == 0 {
 		s.uploadTTL = DefaultUploadTTL
+	}
+	if s.viewTTL == 0 {
+		s.viewTTL = DefaultViewTTL
 	}
 	if s.now == nil {
 		s.now = time.Now
@@ -130,6 +142,59 @@ func (s *Service) presignUploads(ctx context.Context, p model.Photo) (*Uploads, 
 		return nil, fmt.Errorf("presign preview: %w", err)
 	}
 	return &Uploads{Thumb: thumb, Preview: preview}, nil
+}
+
+// Images holds presigned URLs for viewing a photo's renditions.
+type Images struct {
+	Thumb   string
+	Preview string
+}
+
+// PhotoView is a photo as the owner sees it.
+type PhotoView struct {
+	Photo model.Photo
+	// Images is set only for ready photos; a pending photo's renditions
+	// may be missing or partial.
+	Images *Images
+}
+
+// ListPhotos returns a session's photos sorted by filename (ties broken by
+// ID), with view URLs for the ready ones.
+func (s *Service) ListPhotos(ctx context.Context, sessionID string) ([]PhotoView, error) {
+	photos, err := s.store.ListPhotos(ctx, sessionID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, ErrSessionNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list photos: %w", err)
+	}
+	slices.SortStableFunc(photos, func(a, b model.Photo) int {
+		return strings.Compare(a.Filename, b.Filename)
+	})
+
+	views := make([]PhotoView, len(photos))
+	for i, p := range photos {
+		views[i].Photo = p
+		if p.Status != model.StatusReady {
+			continue
+		}
+		if views[i].Images, err = s.presignImages(ctx, p); err != nil {
+			return nil, err
+		}
+	}
+	return views, nil
+}
+
+func (s *Service) presignImages(ctx context.Context, p model.Photo) (*Images, error) {
+	thumb, err := s.blobs.PresignGet(ctx, p.ThumbKey(), s.viewTTL)
+	if err != nil {
+		return nil, fmt.Errorf("presign thumb: %w", err)
+	}
+	preview, err := s.blobs.PresignGet(ctx, p.PreviewKey(), s.viewTTL)
+	if err != nil {
+		return nil, fmt.Errorf("presign preview: %w", err)
+	}
+	return &Images{Thumb: thumb, Preview: preview}, nil
 }
 
 // CompletePhoto verifies both renditions were uploaded and marks the photo

@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,7 +11,8 @@ import (
 	"photo-sync/internal/store"
 )
 
-// fakeBlobs is an in-memory blob.Store. Presigned URLs are "put://<key>".
+// fakeBlobs is an in-memory blob.Store. Presigned URLs are "put://<key>"
+// and "get://<key>"; presignErr fails both.
 type fakeBlobs struct {
 	objects    map[string]bool
 	presignErr error
@@ -22,6 +24,13 @@ func (f *fakeBlobs) PresignPut(_ context.Context, key string, _ time.Duration) (
 		return "", f.presignErr
 	}
 	return "put://" + key, nil
+}
+
+func (f *fakeBlobs) PresignGet(_ context.Context, key string, _ time.Duration) (string, error) {
+	if f.presignErr != nil {
+		return "", f.presignErr
+	}
+	return "get://" + key, nil
 }
 
 func (f *fakeBlobs) Exists(_ context.Context, key string) (bool, error) {
@@ -196,6 +205,82 @@ func TestCompletePhotoErrors(t *testing.T) {
 		blobs.existsErr = boom
 		_, err := svc.CompletePhoto(ctx, sid, reg.Photo.ID)
 		if !errors.Is(err, boom) || errors.Is(err, ErrNotUploaded) {
+			t.Errorf("err = %v, want wrapped boom", err)
+		}
+	})
+}
+
+// readyPhoto registers a photo and marks it ready.
+func readyPhoto(t *testing.T, svc *Service, blobs *fakeBlobs, sid, filename, hash string) model.Photo {
+	t.Helper()
+	ctx := context.Background()
+	reg, err := svc.RegisterPhoto(ctx, sid, filename, hash, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobs.objects[reg.Photo.ThumbKey()] = true
+	blobs.objects[reg.Photo.PreviewKey()] = true
+	p, err := svc.CompletePhoto(ctx, sid, reg.Photo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestListPhotos(t *testing.T) {
+	ctx := context.Background()
+	svc, blobs := newService(t)
+	sid := mustSession(t, svc).ID
+
+	empty, err := svc.ListPhotos(ctx, sid)
+	if err != nil || empty == nil || len(empty) != 0 {
+		t.Fatalf("empty session: %v, %v (want non-nil empty slice)", empty, err)
+	}
+
+	// Registered out of filename order; one left pending.
+	b := readyPhoto(t, svc, blobs, sid, "DSC0002.ARW", strings.Repeat("b", 64))
+	pending, _ := svc.RegisterPhoto(ctx, sid, "DSC0003.ARW", strings.Repeat("c", 64), false)
+	a := readyPhoto(t, svc, blobs, sid, "DSC0001.ARW", hashA)
+
+	got, err := svc.ListPhotos(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d photos, want 3", len(got))
+	}
+	for i, want := range []string{a.ID, b.ID, pending.Photo.ID} {
+		if got[i].Photo.ID != want {
+			t.Errorf("photo %d = %s (%s), want %s", i, got[i].Photo.ID, got[i].Photo.Filename, want)
+		}
+	}
+
+	wantImages := &Images{Thumb: "get://" + a.ThumbKey(), Preview: "get://" + a.PreviewKey()}
+	if img := got[0].Images; img == nil || *img != *wantImages {
+		t.Errorf("ready photo images = %+v, want %+v", img, wantImages)
+	}
+	if got[2].Images != nil {
+		t.Errorf("pending photo has images: %+v", got[2].Images)
+	}
+}
+
+func TestListPhotosErrors(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("unknown session", func(t *testing.T) {
+		svc, _ := newService(t)
+		if _, err := svc.ListPhotos(ctx, "nope"); !errors.Is(err, ErrSessionNotFound) {
+			t.Errorf("err = %v, want ErrSessionNotFound", err)
+		}
+	})
+
+	t.Run("presign failure", func(t *testing.T) {
+		svc, blobs := newService(t)
+		sid := mustSession(t, svc).ID
+		readyPhoto(t, svc, blobs, sid, "a.ARW", hashA)
+		boom := errors.New("boom")
+		blobs.presignErr = boom
+		if _, err := svc.ListPhotos(ctx, sid); !errors.Is(err, boom) {
 			t.Errorf("err = %v, want wrapped boom", err)
 		}
 	})

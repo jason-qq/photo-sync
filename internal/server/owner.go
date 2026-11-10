@@ -42,6 +42,20 @@ func (s *Server) createPhoto(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+// listPhotos handles api.RouteListPhotos.
+func (s *Server) listPhotos(w http.ResponseWriter, r *http.Request) error {
+	views, err := s.svc.ListPhotos(r.Context(), r.PathValue("sid"))
+	if err != nil {
+		return err
+	}
+	resp := api.ListPhotosResponse{Photos: make([]api.Photo, len(views))}
+	for i, v := range views {
+		resp.Photos[i] = toAPIPhotoView(v)
+	}
+	writeJSON(w, http.StatusOK, resp)
+	return nil
+}
+
 // completePhoto handles api.RouteCompletePhoto.
 func (s *Server) completePhoto(w http.ResponseWriter, r *http.Request) error {
 	p, err := s.svc.CompletePhoto(r.Context(), r.PathValue("sid"), r.PathValue("pid"))
@@ -64,4 +78,18 @@ func toAPIPhoto(p model.Photo, u *review.Uploads) api.PhotoResponse {
 		resp.UploadURLs = &api.UploadURLs{Thumb: u.Thumb, Preview: u.Preview}
 	}
 	return resp
+}
+
+func toAPIPhotoView(v review.PhotoView) api.Photo {
+	p := api.Photo{
+		ID:        v.Photo.ID,
+		Filename:  v.Photo.Filename,
+		Hash:      v.Photo.Hash,
+		Status:    api.PhotoStatus(v.Photo.Status),
+		CreatedAt: v.Photo.CreatedAt,
+	}
+	if v.Images != nil {
+		p.Images = &api.ImageURLs{Thumb: v.Images.Thumb, Preview: v.Images.Preview}
+	}
+	return p
 }

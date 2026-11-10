@@ -40,7 +40,7 @@ func newEnv(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	mux.Handle("/", srv)
-	mux.Handle("PUT "+blob.LocalPathPrefix+"{key...}", blobs)
+	mux.Handle(blob.LocalPathPrefix+"{key...}", blobs)
 	return &env{t, ts}
 }
 
@@ -165,12 +165,73 @@ func TestUploadFlow(t *testing.T) {
 	}
 }
 
+func TestListPhotos(t *testing.T) {
+	e := newEnv(t)
+	sid := e.createSession()
+	photos := "/api/sessions/" + sid + "/photos"
+
+	// Empty session: an empty array, not null.
+	var raw map[string]json.RawMessage
+	if code := e.call("GET", photos, nil, &raw); code != http.StatusOK {
+		t.Fatalf("list empty: %d", code)
+	}
+	if got := string(raw["photos"]); got != "[]" {
+		t.Errorf("empty photos = %s, want []", got)
+	}
+
+	// One ready photo, one pending.
+	var ready, pending api.PhotoResponse
+	e.call("POST", photos, map[string]string{"filename": "b.ARW", "hash": hashA}, &ready)
+	e.upload(ready.UploadURLs.Thumb)
+	e.upload(ready.UploadURLs.Preview)
+	if code := e.call("POST", photos+"/"+ready.PhotoID+"/complete", nil, nil); code != http.StatusOK {
+		t.Fatalf("complete: %d", code)
+	}
+	e.call("POST", photos, map[string]string{"filename": "a.ARW", "hash": strings.Repeat("b", 64)}, &pending)
+
+	var list api.ListPhotosResponse
+	if code := e.call("GET", photos, nil, &list); code != http.StatusOK {
+		t.Fatalf("list: %d", code)
+	}
+	if len(list.Photos) != 2 {
+		t.Fatalf("got %d photos, want 2", len(list.Photos))
+	}
+	a, b := list.Photos[0], list.Photos[1] // sorted by filename
+	if a.ID != pending.PhotoID || a.Status != api.PhotoPending || a.Images != nil {
+		t.Errorf("pending photo: %+v", a)
+	}
+	if b.ID != ready.PhotoID || b.Filename != "b.ARW" || b.Hash != hashA || b.Status != api.PhotoReady || b.Images == nil {
+		t.Fatalf("ready photo: %+v", b)
+	}
+
+	// The image URLs serve what was uploaded, without the API key.
+	for _, url := range []string{b.Images.Thumb, b.Images.Preview} {
+		resp, err := http.Get(url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || string(body) != "jpeg" {
+			t.Errorf("GET image: %d %q", resp.StatusCode, body)
+		}
+	}
+
+	var errResp api.Error
+	if code := e.call("GET", "/api/sessions/nope/photos", nil, &errResp); code != http.StatusNotFound || errResp.Error == "" {
+		t.Errorf("unknown session: %d %+v, want 404", code, errResp)
+	}
+}
+
 func TestAuth(t *testing.T) {
 	e := newEnv(t)
 	body := map[string]string{"title": "x", "date": "2026-11-09"}
 	for _, key := range []string{"", "wrong-key"} {
 		if code := e.do("POST", "/api/sessions", key, body, nil); code != http.StatusUnauthorized {
 			t.Errorf("key %q: status %d, want 401", key, code)
+		}
+		if code := e.do("GET", "/api/sessions/any/photos", key, nil, nil); code != http.StatusUnauthorized {
+			t.Errorf("list photos, key %q: status %d, want 401", key, code)
 		}
 	}
 }

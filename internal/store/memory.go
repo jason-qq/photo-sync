@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"sync"
 
 	"photo-sync/internal/model"
@@ -73,6 +75,20 @@ func (m *Memory) GetPhoto(_ context.Context, sessionID, photoID string) (model.P
 		return model.Photo{}, ErrNotFound
 	}
 	return p, nil
+}
+
+func (m *Memory) ListPhotos(_ context.Context, sessionID string) ([]model.Photo, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.sessions[sessionID]; !ok {
+		return nil, ErrNotFound
+	}
+	photos := make([]model.Photo, 0, len(m.photos[sessionID]))
+	for _, p := range m.photos[sessionID] {
+		photos = append(photos, p)
+	}
+	slices.SortFunc(photos, func(a, b model.Photo) int { return strings.Compare(a.ID, b.ID) })
+	return photos, nil
 }
 
 func (m *Memory) SetPhotoStatus(_ context.Context, sessionID, photoID string, status model.PhotoStatus) error {

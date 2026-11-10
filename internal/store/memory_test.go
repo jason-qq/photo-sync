@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 
@@ -98,6 +99,39 @@ func TestNotFound(t *testing.T) {
 	}
 	if err := m.SetPhotoStatus(ctx, sid, "nope", model.StatusReady); !errors.Is(err, ErrNotFound) {
 		t.Errorf("SetPhotoStatus: %v", err)
+	}
+	if _, err := m.ListPhotos(ctx, "nope"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("ListPhotos: %v", err)
+	}
+}
+
+func TestListPhotos(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemory()
+	sid, other := newSession(t, m), newSession(t, m)
+
+	got, err := m.ListPhotos(ctx, sid)
+	if err != nil || got == nil || len(got) != 0 {
+		t.Fatalf("empty session: %v, %v (want non-nil empty slice)", got, err)
+	}
+
+	var want []string
+	for _, h := range []string{"h1", "h2", "h3"} {
+		p, _, _ := m.CreatePhoto(ctx, photo(sid, h))
+		want = append(want, p.ID)
+	}
+	m.CreatePhoto(ctx, photo(other, "h1"))
+
+	got, err = m.ListPhotos(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, p := range got {
+		ids = append(ids, p.ID)
+	}
+	if !slices.Equal(ids, want) {
+		t.Errorf("IDs = %v, want %v (creation order, this session only)", ids, want)
 	}
 }
 

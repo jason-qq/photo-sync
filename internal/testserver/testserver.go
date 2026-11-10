@@ -41,6 +41,6 @@ func Start(t testing.TB) *Env {
 		t.Fatal(err)
 	}
 	mux.Handle("/", srv)
-	mux.Handle("PUT "+blob.LocalPathPrefix+"{key...}", blobs)
+	mux.Handle(blob.LocalPathPrefix+"{key...}", blobs)
 	return &Env{URL: ts.URL, BlobDir: dir}
 }
