@@ -1,9 +1,14 @@
 // Reviewer page, opened from a link like https://…/r#<token>.
 //
 // 1. The token is in the URL fragment, which browsers never send to the
-//    server (so it can't land in logs or Referer headers). This script
-//    removes it from the address bar and history straight away, then posts
-//    it once to /api/review/session, which sets an HttpOnly cookie.
+//    server (so it can't land in logs or Referer headers). On every load
+//    this script posts it to /api/review/session, which sets an HttpOnly
+//    cookie. The token deliberately stays in the address bar: apps like
+//    Instagram and LINE open links in an in-app browser with its own
+//    cookies, and moving to the real browser carries over only the URL. If
+//    the token were removed, the real browser would have neither the token
+//    nor the cookie. (The link is already in the reviewer's chat app on the
+//    same device, so keeping it in history exposes nothing new.)
 // 2. Everything else uses that cookie: GET /api/review returns the session,
 //    its photos and this reviewer's feedback; PATCH/DELETE
 //    /api/review/photos/{id}/feedback save it.
@@ -453,11 +458,11 @@ async function start() {
   applyLang();
   draw();
 
+  // Exchanged on every load that has it, so whichever browser ends up with
+  // the URL (in-app, Safari, Chrome…) signs itself in. Without it (e.g. a
+  // bookmark of plain /r), the cookie from an earlier visit is used.
   const token = location.hash.slice(1);
   if (token) {
-    // Remove the token from the address bar and history before anything
-    // else, so it isn't left behind on this device.
-    history.replaceState(null, "", location.pathname + location.search);
     try {
       await request("POST", "/api/review/session", { token });
     } catch (err) {

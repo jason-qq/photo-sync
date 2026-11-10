@@ -369,8 +369,11 @@ go test ./internal/preview -run TestRealRaws -v
   the API) are rejected using Go's `http.CrossOriginProtection`.
 - Review links carry a 256-bit random token in the URL **fragment** (`/r#<token>`), which
   browsers never send to the server, so it can't appear in access logs or `Referer`
-  headers. The page exchanges it once for a reviewer cookie and removes it from the
-  address bar and history. Only the token's SHA-256 is stored.
+  headers. The page exchanges it for a reviewer cookie on each load and leaves it in the
+  address bar, so the link keeps working when an app's in-app browser (Instagram, LINE)
+  hands the page to the phone's real browser, which has separate cookies. The same link
+  is already in the reviewer's chat app, so this exposes nothing new; revoking or
+  expiring the link still ends access immediately. Only the token's SHA-256 is stored.
 - Every reviewer request re-checks the link, so expiry and revocation apply immediately.
   A reviewer sees only their session's ready photos and their own feedback, never
   filenames, hashes or other reviewers' feedback. The reviewer page has no link-preview
