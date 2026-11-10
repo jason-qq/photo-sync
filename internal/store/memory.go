@@ -98,7 +98,11 @@ func (m *Memory) ListPhotos(_ context.Context, sessionID string) ([]model.Photo,
 	for _, p := range m.photos[sessionID] {
 		photos = append(photos, p)
 	}
-	slices.SortFunc(photos, func(a, b model.Photo) int { return strings.Compare(a.ID, b.ID) })
+	// Sort on Dynamo's LSI1 sort key itself so both stores agree exactly,
+	// including filenames containing characters that sort before '#'.
+	slices.SortFunc(photos, func(a, b model.Photo) int {
+		return strings.Compare(photoLSI1SK(a.Filename, a.ID), photoLSI1SK(b.Filename, b.ID))
+	})
 	return photos, nil
 }
 

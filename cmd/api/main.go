@@ -1,24 +1,39 @@
 // Command api runs the photo review API and owner web UI as a local HTTP
-// server, using the in-memory store and disk-backed blob storage. Open the
-// base URL in a browser and sign in with the API key.
+// server with disk-backed blob storage. Open the base URL in a browser and
+// sign in with the API key.
+//
+// Sessions and photos are kept in memory (lost on restart) unless
+// PHOTOSYNC_DYNAMODB_TABLE is set.
 //
 // Environment:
 //
-//	PHOTOSYNC_API_KEY   owner API key (required)
-//	PHOTOSYNC_ADDR      listen address (default localhost:8080)
-//	PHOTOSYNC_BASE_URL  externally reachable origin (default http://<addr>)
-//	PHOTOSYNC_DATA_DIR  blob storage directory (default ./data)
+//	PHOTOSYNC_API_KEY            owner API key (required)
+//	PHOTOSYNC_ADDR               listen address (default localhost:8080)
+//	PHOTOSYNC_BASE_URL           externally reachable origin (default http://<addr>)
+//	PHOTOSYNC_DATA_DIR           blob storage directory (default ./data)
+//	PHOTOSYNC_DYNAMODB_TABLE     use this DynamoDB table instead of memory
+//	PHOTOSYNC_DYNAMODB_ENDPOINT  DynamoDB endpoint override, for DynamoDB Local
+//	                             (e.g. http://localhost:8000); the table is
+//	                             created if missing and dummy credentials are
+//	                             used. Unset: real AWS via the default
+//	                             credential chain (AWS_PROFILE, AWS_REGION, ...).
 package main
 
 import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 
 	"photo-sync/internal/blob"
 	"photo-sync/internal/review"
@@ -48,8 +63,12 @@ func run() error {
 	secret := make([]byte, 32)
 	rand.Read(secret)
 
+	st, err := openStore()
+	if err != nil {
+		return err
+	}
 	blobs := blob.NewLocal(dataDir, baseURL, secret)
-	svc, err := review.New(review.Config{Store: store.NewMemory(), Blobs: blobs})
+	svc, err := review.New(review.Config{Store: st, Blobs: blobs})
 	if err != nil {
 		return err
 	}
@@ -91,6 +110,39 @@ func run() error {
 		defer cancel()
 		return hs.Shutdown(shutdownCtx)
 	}
+}
+
+// openStore returns the store selected by the environment.
+func openStore() (store.Store, error) {
+	table := os.Getenv("PHOTOSYNC_DYNAMODB_TABLE")
+	if table == "" {
+		slog.Info("store: in memory (data is lost on restart)")
+		return store.NewMemory(), nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	endpoint := os.Getenv("PHOTOSYNC_DYNAMODB_ENDPOINT")
+	if endpoint == "" {
+		cfg, err := config.LoadDefaultConfig(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("load AWS config: %w", err)
+		}
+		slog.Info("store: DynamoDB", "table", table, "region", cfg.Region)
+		return store.NewDynamo(dynamodb.NewFromConfig(cfg), table), nil
+	}
+
+	// DynamoDB Local accepts any credentials and region.
+	db := dynamodb.New(dynamodb.Options{
+		Region:       envOr("AWS_REGION", "us-east-1"),
+		BaseEndpoint: aws.String(endpoint),
+		Credentials:  credentials.NewStaticCredentialsProvider("local", "local", ""),
+	})
+	if err := store.CreateTable(ctx, db, table); err != nil {
+		return nil, err
+	}
+	slog.Info("store: DynamoDB Local", "table", table, "endpoint", endpoint)
+	return store.NewDynamo(db, table), nil
 }
 
 func envOr(key, def string) string {

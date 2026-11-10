@@ -174,8 +174,8 @@ type PhotoView struct {
 	Images *Images
 }
 
-// ListPhotos returns a session's photos sorted by filename (ties broken by
-// ID), with view URLs for the ready ones.
+// ListPhotos returns a session's photos in the store's order (by filename),
+// with view URLs for the ready ones.
 func (s *Service) ListPhotos(ctx context.Context, sessionID string) ([]PhotoView, error) {
 	photos, err := s.store.ListPhotos(ctx, sessionID)
 	if errors.Is(err, store.ErrNotFound) {
@@ -184,9 +184,6 @@ func (s *Service) ListPhotos(ctx context.Context, sessionID string) ([]PhotoView
 	if err != nil {
 		return nil, fmt.Errorf("list photos: %w", err)
 	}
-	slices.SortStableFunc(photos, func(a, b model.Photo) int {
-		return strings.Compare(a.Filename, b.Filename)
-	})
 
 	views := make([]PhotoView, len(photos))
 	for i, p := range photos {

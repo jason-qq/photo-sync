@@ -30,9 +30,11 @@ type Store interface {
 	// doesn't exist.
 	CreatePhoto(ctx context.Context, p model.Photo) (stored model.Photo, created bool, err error)
 	GetPhoto(ctx context.Context, sessionID, photoID string) (model.Photo, error)
-	// ListPhotos returns all photos in a session, in ID order (which is
-	// creation order, since IDs are ULIDs). Returns ErrNotFound if the
-	// session doesn't exist.
+	// ListPhotos returns all photos in a session sorted by Filename, ties
+	// broken by ID (precisely: by the string "PHOTO#{filename}#{id}", which
+	// is DynamoDB's index sort key). Sorting belongs to the store so that a
+	// paginated version returns correctly ordered pages. Returns
+	// ErrNotFound if the session doesn't exist.
 	ListPhotos(ctx context.Context, sessionID string) ([]model.Photo, error)
 	SetPhotoStatus(ctx context.Context, sessionID, photoID string, status model.PhotoStatus) error
 }
