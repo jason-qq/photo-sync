@@ -331,6 +331,160 @@ func TestReviewerFlow(t *testing.T) {
 	}
 }
 
+// readyPhoto registers, uploads and completes a photo, returning its ID.
+func (e *env) readyPhoto(sid, filename, hash string) string {
+	e.t.Helper()
+	var p api.PhotoResponse
+	e.call("POST", api.PhotosPath(sid), map[string]string{"filename": filename, "hash": hash}, &p)
+	e.upload(p.UploadURLs.Thumb)
+	e.upload(p.UploadURLs.Preview)
+	if code := e.call("POST", api.CompletePath(sid, p.PhotoID), nil, nil); code != http.StatusOK {
+		e.t.Fatalf("complete: %d", code)
+	}
+	return p.PhotoID
+}
+
+// reviewerCookie creates a reviewer link for the session and exchanges it
+// for a reviewer session cookie.
+func (e *env) reviewerCookie(sid, name string) *http.Cookie {
+	e.t.Helper()
+	var created api.CreateReviewerResponse
+	e.call("POST", api.ReviewersPath(sid), map[string]any{"name": name}, &created)
+	token := strings.TrimPrefix(created.LinkPath, "/r#")
+	c := cookieNamed(e.send("POST", "/api/review/session", `{"token":"`+token+`"}`, "", nil), server.ReviewerCookie)
+	if c == nil {
+		e.t.Fatal("no reviewer cookie")
+	}
+	return c
+}
+
+// asReviewer sends a JSON request with a reviewer cookie, decodes the
+// response into out (if non-nil and there is a body) and returns the
+// status.
+func (e *env) asReviewer(c *http.Cookie, method, path string, body any, out any) int {
+	e.t.Helper()
+	var rdr io.Reader
+	switch b := body.(type) {
+	case nil:
+	case string:
+		rdr = strings.NewReader(b)
+	default:
+		buf, _ := json.Marshal(b)
+		rdr = bytes.NewReader(buf)
+	}
+	req, _ := http.NewRequest(method, e.url+path, rdr)
+	req.AddCookie(c)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if out != nil && resp.StatusCode != http.StatusNoContent {
+		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+			e.t.Fatalf("%s %s: decode: %v", method, path, err)
+		}
+	}
+	return resp.StatusCode
+}
+
+func TestFeedbackFlow(t *testing.T) {
+	e := newEnv(t)
+	sid := e.createSession()
+	pid := e.readyPhoto(sid, "a.ARW", hashA)
+	c := e.reviewerCookie(sid, "A")
+	fb := api.FeedbackPath(pid)
+
+	var f api.Feedback
+	if code := e.asReviewer(c, "PATCH", fb, `{"verdict":"accept"}`, &f); code != http.StatusOK ||
+		f.Verdict == nil || *f.Verdict != "accept" || f.Stars != nil || f.UpdatedAt == nil {
+		t.Fatalf("set verdict: %d %+v", code, f)
+	}
+	// Other fields: the verdict stays.
+	f = api.Feedback{}
+	e.asReviewer(c, "PATCH", fb, map[string]any{"stars": 4, "comment": "色味が良い\n2行目"}, &f)
+	if f.Verdict == nil || *f.Verdict != "accept" || f.Stars == nil || *f.Stars != 4 || f.Comment == nil || *f.Comment != "色味が良い\n2行目" {
+		t.Fatalf("set stars+comment: %+v", f)
+	}
+	// null clears just that field.
+	f = api.Feedback{}
+	e.asReviewer(c, "PATCH", fb, `{"verdict":null}`, &f)
+	if f.Verdict != nil || f.Stars == nil || f.Comment == nil {
+		t.Fatalf("clear verdict: %+v", f)
+	}
+
+	// The view carries it.
+	var view api.ReviewerViewResponse
+	e.asReviewer(c, "GET", "/api/review", nil, &view)
+	if got := view.Photos[0].Feedback; got == nil || got.Stars == nil || *got.Stars != 4 || got.Verdict != nil {
+		t.Errorf("view feedback: %+v", got)
+	}
+
+	// Another reviewer of the same session sees none of it.
+	other := e.reviewerCookie(sid, "B")
+	var otherView api.ReviewerViewResponse
+	e.asReviewer(other, "GET", "/api/review", nil, &otherView)
+	if otherView.Photos[0].Feedback != nil {
+		t.Errorf("reviewer B sees A's feedback: %+v", otherView.Photos[0].Feedback)
+	}
+
+	// Delete (idempotent), then the photo is unreviewed.
+	for range 2 {
+		if code := e.asReviewer(c, "DELETE", fb, nil, nil); code != http.StatusNoContent {
+			t.Errorf("delete: %d, want 204", code)
+		}
+	}
+	view = api.ReviewerViewResponse{}
+	e.asReviewer(c, "GET", "/api/review", nil, &view)
+	if view.Photos[0].Feedback != nil {
+		t.Errorf("after delete: %+v", view.Photos[0].Feedback)
+	}
+}
+
+func TestFeedbackValidation(t *testing.T) {
+	e := newEnv(t)
+	sid := e.createSession()
+	pid := e.readyPhoto(sid, "a.ARW", hashA)
+	var pending api.PhotoResponse
+	e.call("POST", api.PhotosPath(sid), map[string]string{"filename": "b.ARW", "hash": strings.Repeat("b", 64)}, &pending)
+	otherPhoto := e.readyPhoto(e.createSession(), "c.ARW", strings.Repeat("c", 64))
+	c := e.reviewerCookie(sid, "A")
+	fb := api.FeedbackPath(pid)
+
+	tests := []struct {
+		name, path string
+		body       any
+		want       int
+	}{
+		{"no fields", fb, `{}`, 400},
+		{"bad verdict", fb, `{"verdict":"maybe"}`, 400},
+		{"zero stars", fb, `{"stars":0}`, 400},
+		{"six stars", fb, `{"stars":6}`, 400},
+		{"stars as string", fb, `{"stars":"5"}`, 400},
+		{"unknown field", fb, `{"stars":3,"rating":3}`, 400},
+		{"2000-char Japanese comment", fb, map[string]string{"comment": strings.Repeat("あ", 2000)}, 200},
+		{"2001-char comment", fb, map[string]string{"comment": strings.Repeat("あ", 2001)}, 400},
+		{"empty comment clears", fb, `{"comment":""}`, 200},
+		{"pending photo", api.FeedbackPath(pending.PhotoID), `{"stars":3}`, 404},
+		{"unknown photo", api.FeedbackPath("nope"), `{"stars":3}`, 404},
+		{"other session's photo", api.FeedbackPath(otherPhoto), `{"stars":3}`, 404},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var resp map[string]any
+			if code := e.asReviewer(c, "PATCH", tt.path, tt.body, &resp); code != tt.want {
+				t.Errorf("status %d, want %d (%v)", code, tt.want, resp)
+			}
+		})
+	}
+
+	// Reviewer routes need the reviewer cookie; the owner key doesn't count.
+	for _, method := range []string{"PATCH", "DELETE"} {
+		if code := e.call(method, fb, `{"stars":3}`, nil); code != http.StatusUnauthorized {
+			t.Errorf("%s with owner key: %d, want 401", method, code)
+		}
+	}
+}
+
 func (e *env) upload(url string) {
 	e.t.Helper()
 	req, _ := http.NewRequest(http.MethodPut, url, strings.NewReader("jpeg"))

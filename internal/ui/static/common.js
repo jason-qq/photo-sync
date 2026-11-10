@@ -19,8 +19,9 @@ class Unauthorized extends HTTPError {}
 
 // request sends a same-origin request (session cookies go along
 // automatically) and returns the decoded JSON body, or null for 204.
-async function request(method, path, body) {
-  const init = { method, cache: "no-store" };
+// opts.keepalive lets the request outlive the page (for saves on close).
+async function request(method, path, body, opts = {}) {
+  const init = { method, cache: "no-store", keepalive: !!opts.keepalive };
   if (body !== undefined) {
     init.headers = { "Content-Type": "application/json" };
     init.body = JSON.stringify(body);
@@ -49,12 +50,28 @@ function h(tag, attrs = {}, ...children) {
   return el;
 }
 
+// fill replaces el's children, skipping null like h does. Use it instead
+// of el.replaceChildren, which renders null as the text "null".
+function fill(el, ...children) {
+  el.replaceChildren(...children.filter((c) => c != null));
+  return el;
+}
+
 // --- Full-screen viewer ---
+
+// isComposing is set by pages with text inputs while an IME (e.g. Japanese
+// kana-to-kanji conversion) is composing, so viewer shortcuts stay out of
+// the way. KeyboardEvent.isComposing covers most cases; this flag covers
+// browsers that report Escape/arrow keys with it unset.
+let isComposing = false;
+document.addEventListener("compositionstart", () => { isComposing = true; });
+document.addEventListener("compositionend", () => { isComposing = false; });
 
 // makeViewer wires up the page's <dialog id="viewer"> markup. caption(photo,
 // index) returns the text shown (and used as alt text) for a photo; photos
-// are objects with images.preview.
-function makeViewer(caption) {
+// are objects with images.preview. onShow(photo, index), if given, runs
+// after a photo is shown (e.g. to render its feedback controls).
+function makeViewer(caption, onShow) {
   const dialog = document.getElementById("viewer");
   const img = document.getElementById("viewer-img");
   const name = document.getElementById("viewer-name");
@@ -75,14 +92,23 @@ function makeViewer(caption) {
     pos.textContent = `${i + 1} / ${photos.length}`;
     prev.disabled = i === 0;
     next.disabled = i === photos.length - 1;
+    if (onShow) onShow(p, i);
   }
 
   prev.addEventListener("click", () => index > 0 && show(index - 1));
   next.addEventListener("click", () => index < photos.length - 1 && show(index + 1));
   close.addEventListener("click", () => dialog.close());
   dialog.addEventListener("keydown", (e) => {
+    // Arrow keys move the text cursor while typing, not the photo.
+    const typing = e.target.matches("input, textarea, select");
+    if (typing || e.isComposing || isComposing) return;
     if (e.key === "ArrowLeft") prev.click();
     if (e.key === "ArrowRight") next.click();
+  });
+  // Escape closes the dialog, except while an IME is composing: there it
+  // cancels the conversion.
+  dialog.addEventListener("cancel", (e) => {
+    if (isComposing) e.preventDefault();
   });
   dialog.addEventListener("close", () => img.removeAttribute("src"));
 
@@ -94,6 +120,10 @@ function makeViewer(caption) {
     },
     close() {
       if (dialog.open) dialog.close();
+    },
+    // current returns the photo on screen, or null when closed.
+    current() {
+      return dialog.open ? photos[index] : null;
     },
     // setLabels translates the dialog's own controls.
     setLabels({ close: closeText, prev: prevLabel, next: nextLabel, dialog: dialogLabel }) {

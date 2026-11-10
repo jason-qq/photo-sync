@@ -57,6 +57,42 @@ func (r Reviewer) Active(now time.Time) bool {
 	return !r.Revoked && now.Before(r.ExpiresAt)
 }
 
+// Verdict is a reviewer's primary judgement of a photo.
+type Verdict string
+
+const (
+	VerdictNone   Verdict = ""
+	VerdictAccept Verdict = "accept"
+	VerdictReject Verdict = "reject"
+)
+
+// Feedback is one reviewer's feedback on one photo. All fields are
+// independent and optional (DESIGN.md §7): a rejected photo may still be
+// starred. Zero values mean "not set".
+type Feedback struct {
+	SessionID  string
+	ReviewerID string
+	PhotoID    string
+	Verdict    Verdict
+	Stars      int // 1–5, 0 = none
+	Comment    string
+	UpdatedAt  time.Time
+}
+
+// Empty reports whether no field is set.
+func (f Feedback) Empty() bool {
+	return f.Verdict == VerdictNone && f.Stars == 0 && f.Comment == ""
+}
+
+// FeedbackPatch is a partial update to Feedback. A nil field is left as
+// is; a non-nil field is set, and a zero value (VerdictNone, 0, "") clears
+// it.
+type FeedbackPatch struct {
+	Verdict *Verdict
+	Stars   *int
+	Comment *string
+}
+
 // ThumbKey is the blob key of the photo's grid thumbnail.
 func (p Photo) ThumbKey() string {
 	return "sessions/" + p.SessionID + "/" + p.ID + "/thumb.jpg"

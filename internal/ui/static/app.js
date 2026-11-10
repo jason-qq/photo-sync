@@ -25,7 +25,7 @@ let signedIn = false;
 const api = (path) => request("GET", path);
 
 function render(...nodes) {
-  app.replaceChildren(...nodes.filter((n) => n != null)); // null would render as "null"
+  fill(app, ...nodes);
 }
 
 function plural(n, word) {
@@ -220,9 +220,7 @@ function reviewersPanel(sid, initial) {
   }
 
   function draw() {
-    // replaceChildren (unlike h) would render null as the text "null",
-    // so optional parts are filtered out first.
-    panel.replaceChildren(...[
+    fill(panel,
       h("h2", { id: "reviewers-heading" }, "Reviewers"),
       reviewers.length === 0
         ? h("p", { class: "muted" }, "No review links yet.")
@@ -230,7 +228,7 @@ function reviewersPanel(sid, initial) {
       newLink ? linkBox() : null,
       error ? h("p", { class: "error", role: "alert" }, error) : null,
       form(),
-    ].filter((n) => n != null));
+    );
   }
 
   draw();

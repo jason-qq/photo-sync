@@ -4,8 +4,91 @@
 .lang-switch button { color: var(--muted); }
 .lang-switch button[aria-pressed="true"] { color: var(--text); font-weight: 600; }
 
+.save-status { margin-left: auto; margin-right: 16px; font-size: 0.85rem; color: var(--muted); }
+.save-status.error { color: var(--danger); }
+.save-status button { margin-left: 8px; padding: 2px 10px; }
+
 .reviewing-as { margin: 0 0 4px; }
 .message { max-width: 520px; margin: 10vh auto 0; text-align: center; }
+.hint { margin: -12px 0 16px; font-size: 0.9rem; }
 
-/* Photo number under each thumbnail (reviewers don't see filenames). */
-.tile figcaption { color: var(--muted); }
+/* Tiles: number, verdict buttons, star summary. Reviewers don't see
+   filenames. */
+:root { --accept: #3fb950; --reject: #ff7b72; --star: #e3b341; }
+.tile.accepted { border-color: var(--accept); }
+.tile.rejected { border-color: var(--reject); }
+.tile.rejected img { opacity: 0.45; }
+.tile-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 1.6em; /* same height whether or not stars are shown */
+  padding: 6px 8px 0;
+  font-size: 0.8rem;
+}
+.tile-num { color: var(--muted); }
+.tile-stars { color: var(--star); letter-spacing: 1px; white-space: nowrap; }
+.tile-comment { margin-left: auto; }
+/* Verdict buttons on their own row, splitting the width: always visible,
+   and large enough to tap on a phone. */
+.tile-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 6px 8px 8px;
+}
+
+/* Verdict toggle buttons (grid and viewer). */
+.verdict { padding: 4px 10px; font-size: 0.85rem; }
+.verdict.accept[aria-pressed="true"] { background: var(--accept); border-color: var(--accept); color: #000; }
+.verdict.reject[aria-pressed="true"] { background: var(--reject); border-color: var(--reject); color: #000; }
+.tile .verdict {
+  padding: 4px 6px;
+  font-size: 0.8rem;
+  /* Long labels (e.g. 不採用 at narrow widths) shrink instead of
+     overflowing the tile. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Viewer feedback panel. */
+.viewer-feedback {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 10px 16px;
+  padding: 10px 16px 14px;
+  border-top: 1px solid var(--border);
+}
+.viewer-feedback .row { display: flex; align-items: center; gap: 8px; }
+.stars { display: flex; gap: 2px; }
+.stars button {
+  background: none;
+  border: none;
+  padding: 0 2px;
+  font-size: 1.6rem;
+  line-height: 1;
+  color: var(--muted);
+}
+.stars button.on { color: var(--star); }
+.viewer-feedback textarea {
+  flex: 1 1 280px;
+  min-height: 3.2em;
+  max-height: 30vh;
+  resize: vertical;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 7px 10px;
+  white-space: pre-wrap;
+}
+.viewer-feedback textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+@media (max-width: 600px) {
+  .bar .save-status { display: none; } /* the viewer shows its own status */
+  .viewer-feedback { padding: 8px 10px 10px; }
+}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -24,6 +26,7 @@ import (
 //	Hash lock   PK=SESSION#{sid}  SK=HASH#{hash}     (photoId)
 //	Reviewer    PK=SESSION#{sid}  SK=REVIEWER#{rid}  (name, tokenHash, expiresAt, revoked)
 //	Token       PK=TOKEN#{hash}   SK=META            (sessionId, reviewerId)
+//	Feedback    PK=SESSION#{sid}  SK=FB#{rid}#{pid}  (verdict?, stars?, comment?, updatedAt)
 //
 // GSI1 lists sessions; LSI1 lists a session's photos in filename order.
 type Dynamo struct {
@@ -121,6 +124,16 @@ const reviewerPrefix = "REVIEWER#"
 // keys and consistent reads.
 func reviewerSK(rid string) string { return reviewerPrefix + rid }
 
+// feedbackPrefix starts a feedback item's SK. Feedback sorts by reviewer,
+// then photo, so one reviewer's feedback is a single begins_with query.
+const feedbackPrefix = "FB#"
+
+// reviewerFeedbackPrefix is the SK prefix of all of reviewer rid's feedback.
+func reviewerFeedbackPrefix(rid string) string { return feedbackPrefix + rid + "#" }
+
+// feedbackSK is the SK of reviewer rid's feedback on photo pid.
+func feedbackSK(rid, pid string) string { return reviewerFeedbackPrefix(rid) + pid }
+
 // tokenPK is the PK of the lookup item for a link token's hash. It maps the
 // token to its reviewer and never changes; expiry and revocation live only
 // on the reviewer item.
@@ -185,6 +198,28 @@ type tokenItem struct {
 	SK         string `dynamodbav:"SK"`
 	SessionID  string `dynamodbav:"sessionId"`
 	ReviewerID string `dynamodbav:"reviewerId"`
+}
+
+// feedbackItem is a reviewer's feedback on a photo: PK=SESSION#{sid},
+// SK=FB#{rid}#{pid}. Unset fields are absent (omitempty), not stored as
+// zero values.
+type feedbackItem struct {
+	PK         string        `dynamodbav:"PK"`
+	SK         string        `dynamodbav:"SK"`
+	SessionID  string        `dynamodbav:"sessionId"`
+	ReviewerID string        `dynamodbav:"reviewerId"`
+	PhotoID    string        `dynamodbav:"photoId"`
+	Verdict    model.Verdict `dynamodbav:"verdict,omitempty"`
+	Stars      int           `dynamodbav:"stars,omitempty"`
+	Comment    string        `dynamodbav:"comment,omitempty"`
+	UpdatedAt  time.Time     `dynamodbav:"updatedAt"`
+}
+
+func (it feedbackItem) model() model.Feedback {
+	return model.Feedback{
+		SessionID: it.SessionID, ReviewerID: it.ReviewerID, PhotoID: it.PhotoID,
+		Verdict: it.Verdict, Stars: it.Stars, Comment: it.Comment, UpdatedAt: it.UpdatedAt,
+	}
 }
 
 func (it reviewerItem) model() model.Reviewer {
@@ -497,6 +532,111 @@ func (d *Dynamo) SetReviewerExpiry(ctx context.Context, sessionID, reviewerID st
 
 func (d *Dynamo) RevokeReviewer(ctx context.Context, sessionID, reviewerID string) error {
 	return d.setAttr(ctx, sessionPK(sessionID), reviewerSK(reviewerID), "revoked", true)
+}
+
+// UpdateFeedback applies the patch in a single UpdateItem: set fields go in
+// SET, cleared ones in REMOVE (so unset fields are absent, as on create).
+// DynamoDB applies one UpdateItem atomically, so concurrent patches of
+// different fields both survive.
+func (d *Dynamo) UpdateFeedback(ctx context.Context, sessionID, reviewerID, photoID string, patch model.FeedbackPatch, updatedAt time.Time) (model.Feedback, error) {
+	names := map[string]string{}
+	values := map[string]types.AttributeValue{}
+	var set, remove []string
+
+	// put adds "#name = :name" to SET, or "#name" to REMOVE if clear.
+	put := func(name string, value any, clear bool) error {
+		names["#"+name] = name // all names via placeholders; "comment" is reserved
+		if clear {
+			remove = append(remove, "#"+name)
+			return nil
+		}
+		av, err := attributevalue.Marshal(value)
+		if err != nil {
+			return err
+		}
+		values[":"+name] = av
+		set = append(set, "#"+name+" = :"+name)
+		return nil
+	}
+
+	// Identity attributes are (re)written every time so a newly created
+	// item is complete.
+	for name, v := range map[string]any{
+		"sessionId": sessionID, "reviewerId": reviewerID, "photoId": photoID, "updatedAt": updatedAt,
+	} {
+		if err := put(name, v, false); err != nil {
+			return model.Feedback{}, err
+		}
+	}
+	if p := patch.Verdict; p != nil {
+		if err := put("verdict", *p, *p == model.VerdictNone); err != nil {
+			return model.Feedback{}, err
+		}
+	}
+	if p := patch.Stars; p != nil {
+		if err := put("stars", *p, *p == 0); err != nil {
+			return model.Feedback{}, err
+		}
+	}
+	if p := patch.Comment; p != nil {
+		if err := put("comment", *p, *p == ""); err != nil {
+			return model.Feedback{}, err
+		}
+	}
+
+	// Map iteration order is random; sort so expressions are stable
+	// (easier to read in logs and errors).
+	slices.Sort(set)
+	expr := "SET " + strings.Join(set, ", ")
+	if len(remove) > 0 {
+		slices.Sort(remove)
+		expr += " REMOVE " + strings.Join(remove, ", ")
+	}
+
+	out, err := d.db.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:                 &d.table,
+		Key:                       key(sessionPK(sessionID), feedbackSK(reviewerID, photoID)),
+		UpdateExpression:          &expr,
+		ExpressionAttributeNames:  names,
+		ExpressionAttributeValues: values,
+		ReturnValues:              types.ReturnValueAllNew,
+	})
+	if err != nil {
+		return model.Feedback{}, err
+	}
+	var it feedbackItem
+	if err := attributevalue.UnmarshalMap(out.Attributes, &it); err != nil {
+		return model.Feedback{}, err
+	}
+	return it.model(), nil
+}
+
+func (d *Dynamo) DeleteFeedback(ctx context.Context, sessionID, reviewerID, photoID string) error {
+	_, err := d.db.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName: &d.table,
+		Key:       key(sessionPK(sessionID), feedbackSK(reviewerID, photoID)),
+	})
+	return err
+}
+
+func (d *Dynamo) ListFeedback(ctx context.Context, sessionID, reviewerID string) ([]model.Feedback, error) {
+	items, err := queryAll[feedbackItem](ctx, d.db, &dynamodb.QueryInput{
+		TableName:              &d.table,
+		ConsistentRead:         aws.Bool(true),
+		KeyConditionExpression: aws.String("PK = :pk AND begins_with(SK, :prefix)"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pk":     &types.AttributeValueMemberS{Value: sessionPK(sessionID)},
+			":prefix": &types.AttributeValueMemberS{Value: reviewerFeedbackPrefix(reviewerID)},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	fs := make([]model.Feedback, len(items))
+	for i, it := range items {
+		fs[i] = it.model()
+	}
+	return fs, nil
 }
 
 // setAttr sets one attribute on an existing item, returning ErrNotFound if

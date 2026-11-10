@@ -18,6 +18,7 @@ type Memory struct {
 	hashes    map[string]map[string]string         // sessionID -> hash -> photoID
 	reviewers map[string]map[string]model.Reviewer // sessionID -> reviewerID -> reviewer
 	tokens    map[string][2]string                 // tokenHash -> {sessionID, reviewerID}
+	feedback  map[[3]string]model.Feedback         // {sessionID, reviewerID, photoID} -> feedback
 }
 
 var _ Store = (*Memory)(nil)
@@ -30,6 +31,7 @@ func NewMemory() *Memory {
 		hashes:    map[string]map[string]string{},
 		reviewers: map[string]map[string]model.Reviewer{},
 		tokens:    map[string][2]string{},
+		feedback:  map[[3]string]model.Feedback{},
 	}
 }
 
@@ -193,4 +195,46 @@ func (m *Memory) updateReviewer(sessionID, reviewerID string, update func(*model
 	update(&r)
 	m.reviewers[sessionID][reviewerID] = r
 	return nil
+}
+
+func (m *Memory) UpdateFeedback(_ context.Context, sessionID, reviewerID, photoID string, patch model.FeedbackPatch, updatedAt time.Time) (model.Feedback, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := [3]string{sessionID, reviewerID, photoID}
+	f, ok := m.feedback[k]
+	if !ok {
+		f = model.Feedback{SessionID: sessionID, ReviewerID: reviewerID, PhotoID: photoID}
+	}
+	if patch.Verdict != nil {
+		f.Verdict = *patch.Verdict
+	}
+	if patch.Stars != nil {
+		f.Stars = *patch.Stars
+	}
+	if patch.Comment != nil {
+		f.Comment = *patch.Comment
+	}
+	f.UpdatedAt = updatedAt
+	m.feedback[k] = f
+	return f, nil
+}
+
+func (m *Memory) DeleteFeedback(_ context.Context, sessionID, reviewerID, photoID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.feedback, [3]string{sessionID, reviewerID, photoID})
+	return nil
+}
+
+func (m *Memory) ListFeedback(_ context.Context, sessionID, reviewerID string) ([]model.Feedback, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	fs := []model.Feedback{}
+	for k, f := range m.feedback {
+		if k[0] == sessionID && k[1] == reviewerID {
+			fs = append(fs, f)
+		}
+	}
+	slices.SortFunc(fs, func(a, b model.Feedback) int { return strings.Compare(a.PhotoID, b.PhotoID) })
+	return fs, nil
 }

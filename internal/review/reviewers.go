@@ -167,11 +167,15 @@ func (s *Service) ActiveReviewer(ctx context.Context, sessionID, reviewerID stri
 	return r, nil
 }
 
-// ReviewerView is what a reviewer sees: their session and its ready photos
-// (filename order, which is shot order), each with view URLs.
+// ReviewerView is what a reviewer sees: their session, its ready photos
+// (filename order, which is shot order) with view URLs, and their own
+// feedback.
 type ReviewerView struct {
 	Session model.Session
 	Photos  []PhotoView // Images always set
+	// Feedback is this reviewer's feedback by photo ID; photos without
+	// feedback have no entry.
+	Feedback map[string]model.Feedback
 }
 
 // ReviewerView returns the session r reviews, with only ready photos;
@@ -194,7 +198,15 @@ func (s *Service) ReviewerView(ctx context.Context, r model.Reviewer) (ReviewerV
 			ready = append(ready, p)
 		}
 	}
-	return ReviewerView{Session: sess, Photos: ready}, nil
+	fs, err := s.store.ListFeedback(ctx, r.SessionID, r.ID)
+	if err != nil {
+		return ReviewerView{}, fmt.Errorf("list feedback: %w", err)
+	}
+	byPhoto := make(map[string]model.Feedback, len(fs))
+	for _, f := range fs {
+		byPhoto[f.PhotoID] = f
+	}
+	return ReviewerView{Session: sess, Photos: ready, Feedback: byPhoto}, nil
 }
 
 func (s *Service) getReviewer(ctx context.Context, sessionID, reviewerID string) (model.Reviewer, error) {

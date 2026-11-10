@@ -16,6 +16,7 @@
 <body>
   <header class="bar">
     <span class="brand" id="brand">Photo review</span>
+    <span class="save-status" role="status" aria-live="polite"></span>
     <div class="lang-switch" role="group" aria-label="Language">
       <button type="button" class="link" data-lang="en" lang="en">EN</button>
       <button type="button" class="link" data-lang="ja" lang="ja">日本語</button>
@@ -34,6 +35,8 @@
       <img id="viewer-img" alt="">
       <button id="viewer-next" class="nav" type="button" aria-label="Next photo">›</button>
     </div>
+    <!-- Filled by review.js for the photo on screen. -->
+    <div id="viewer-feedback" class="viewer-feedback"></div>
   </dialog>
 </body>
 </html>

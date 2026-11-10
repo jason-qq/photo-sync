@@ -85,9 +85,83 @@ func (s *Server) reviewerView(w http.ResponseWriter, r *http.Request) error {
 			ID:     p.Photo.ID,
 			Images: api.ImageURLs{Thumb: p.Images.Thumb, Preview: p.Images.Preview},
 		}
+		if f, ok := v.Feedback[p.Photo.ID]; ok {
+			af := toAPIFeedback(f)
+			resp.Photos[i].Feedback = &af
+		}
 	}
 	// The response holds signed image URLs; don't let anything cache it.
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, resp)
 	return nil
+}
+
+// saveFeedback handles api.RouteSaveFeedback.
+func (s *Server) saveFeedback(w http.ResponseWriter, r *http.Request) error {
+	var req api.FeedbackRequest
+	if err := decodeAndValidate(w, r, &req); err != nil {
+		return err
+	}
+	f, err := s.svc.SaveFeedback(r.Context(), reviewerFrom(r.Context()), r.PathValue("pid"), toPatch(req))
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, toAPIFeedback(f))
+	return nil
+}
+
+// deleteFeedback handles api.RouteDeleteFeedback.
+func (s *Server) deleteFeedback(w http.ResponseWriter, r *http.Request) error {
+	if err := s.svc.DeleteFeedback(r.Context(), reviewerFrom(r.Context()), r.PathValue("pid")); err != nil {
+		return err
+	}
+	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
+// toPatch maps the wire request (absent / null / value) onto the domain
+// patch (nil / zero value / value).
+func toPatch(req api.FeedbackRequest) model.FeedbackPatch {
+	var p model.FeedbackPatch
+	if req.Verdict.Set {
+		v := model.VerdictNone
+		if req.Verdict.Value != nil {
+			v = model.Verdict(*req.Verdict.Value)
+		}
+		p.Verdict = &v
+	}
+	if req.Stars.Set {
+		n := 0
+		if req.Stars.Value != nil {
+			n = *req.Stars.Value
+		}
+		p.Stars = &n
+	}
+	if req.Comment.Set {
+		c := ""
+		if req.Comment.Value != nil {
+			c = *req.Comment.Value
+		}
+		p.Comment = &c
+	}
+	return p
+}
+
+// toAPIFeedback maps domain zero values to JSON nulls.
+func toAPIFeedback(f model.Feedback) api.Feedback {
+	var af api.Feedback
+	if f.Verdict != model.VerdictNone {
+		v := string(f.Verdict)
+		af.Verdict = &v
+	}
+	if f.Stars != 0 {
+		af.Stars = &f.Stars
+	}
+	if f.Comment != "" {
+		af.Comment = &f.Comment
+	}
+	if !f.Empty() {
+		af.UpdatedAt = &f.UpdatedAt
+	}
+	return af
 }

@@ -93,6 +93,8 @@ func (s *Server) routes() {
 
 	s.mux.Handle(api.RouteReviewerSession, s.handle(s.startReviewerSession))
 	s.mux.Handle(api.RouteReviewerView, s.requireReviewer(s.handle(s.reviewerView)))
+	s.mux.Handle(api.RouteSaveFeedback, s.requireReviewer(s.handle(s.saveFeedback)))
+	s.mux.Handle(api.RouteDeleteFeedback, s.requireReviewer(s.handle(s.deleteFeedback)))
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -178,7 +180,7 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, he.status, he.msg)
 	case errors.As(err, &ve):
 		writeError(w, http.StatusBadRequest, ve.Error())
-	case errors.Is(err, review.ErrInvalidExpiry):
+	case errors.Is(err, review.ErrInvalidExpiry), errors.Is(err, review.ErrInvalidFeedback):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, review.ErrInvalidLink):
 		writeError(w, http.StatusForbidden, err.Error())

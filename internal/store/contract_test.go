@@ -31,6 +31,9 @@ func testContract(t *testing.T, newStore func(t *testing.T) Store) {
 		{"ReviewerErrors", testReviewerErrors},
 		{"ListReviewers", testListReviewers},
 		{"ReviewerUpdates", testReviewerUpdates},
+		{"FeedbackPatch", testFeedbackPatch},
+		{"FeedbackConcurrentFields", testFeedbackConcurrentFields},
+		{"FeedbackListAndDelete", testFeedbackListAndDelete},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) { tt.fn(t, newStore(t)) })
@@ -372,6 +375,117 @@ func testReviewerUpdates(t *testing.T, s Store) {
 		if !got.ExpiresAt.Equal(later) || !got.Revoked || got.Name != r.Name {
 			t.Errorf("%s: %+v", name, got)
 		}
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
+
+func testFeedbackPatch(t *testing.T, s Store) {
+	sid := newSession(t, s)
+	rid, pid := model.NewID(), model.NewID()
+	t1, t2 := ts, ts.Add(time.Minute)
+
+	got, err := s.UpdateFeedback(ctx, sid, rid, pid, model.FeedbackPatch{Verdict: ptr(model.VerdictAccept)}, t1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Verdict != model.VerdictAccept || got.Stars != 0 || got.Comment != "" || !got.UpdatedAt.Equal(t1) ||
+		got.SessionID != sid || got.ReviewerID != rid || got.PhotoID != pid {
+		t.Fatalf("after verdict: %+v", got)
+	}
+
+	// Patching other fields keeps the verdict; Japanese multi-line text
+	// round-trips.
+	comment := "とても良い写真です。\n色味が好き"
+	got, _ = s.UpdateFeedback(ctx, sid, rid, pid, model.FeedbackPatch{Stars: ptr(4), Comment: ptr(comment)}, t2)
+	if got.Verdict != model.VerdictAccept || got.Stars != 4 || got.Comment != comment || !got.UpdatedAt.Equal(t2) {
+		t.Fatalf("after stars+comment: %+v", got)
+	}
+
+	// Zero values clear; untouched fields stay.
+	got, _ = s.UpdateFeedback(ctx, sid, rid, pid, model.FeedbackPatch{Verdict: ptr(model.VerdictNone), Stars: ptr(0)}, t2)
+	if got.Verdict != model.VerdictNone || got.Stars != 0 || got.Comment != comment {
+		t.Fatalf("after clearing: %+v", got)
+	}
+
+	// What's returned is what's stored.
+	list, _ := s.ListFeedback(ctx, sid, rid)
+	if len(list) != 1 || list[0] != got {
+		t.Errorf("list = %+v, want [%+v]", list, got)
+	}
+}
+
+// Autosave can send a verdict and a comment for the same photo at the same
+// time; neither may be lost.
+func testFeedbackConcurrentFields(t *testing.T, s Store) {
+	sid, rid := newSession(t, s), model.NewID()
+	for range 5 {
+		pid := model.NewID()
+		patches := []model.FeedbackPatch{
+			{Verdict: ptr(model.VerdictReject)},
+			{Stars: ptr(2)},
+			{Comment: ptr("ok")},
+		}
+		var wg sync.WaitGroup
+		for _, p := range patches {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if _, err := s.UpdateFeedback(ctx, sid, rid, pid, p, ts); err != nil {
+					t.Error(err)
+				}
+			}()
+		}
+		wg.Wait()
+		list, _ := s.ListFeedback(ctx, sid, rid)
+		var f model.Feedback
+		for _, x := range list {
+			if x.PhotoID == pid {
+				f = x
+			}
+		}
+		if f.Verdict != model.VerdictReject || f.Stars != 2 || f.Comment != "ok" {
+			t.Fatalf("concurrent patches lost a field: %+v", f)
+		}
+	}
+}
+
+func testFeedbackListAndDelete(t *testing.T, s Store) {
+	sid, other := newSession(t, s), newSession(t, s)
+	alice, bob := model.NewID(), model.NewID()
+
+	got, err := s.ListFeedback(ctx, sid, alice)
+	if err != nil || got == nil || len(got) != 0 {
+		t.Fatalf("no feedback: %v, %v (want non-nil empty slice)", got, err)
+	}
+
+	p1, p2 := model.NewID(), model.NewID() // p1 < p2 (ULIDs)
+	accept := model.FeedbackPatch{Verdict: ptr(model.VerdictAccept)}
+	s.UpdateFeedback(ctx, sid, alice, p2, accept, ts)
+	s.UpdateFeedback(ctx, sid, alice, p1, accept, ts)
+	s.UpdateFeedback(ctx, sid, bob, p1, accept, ts)
+	s.UpdateFeedback(ctx, other, alice, p1, accept, ts)
+	// Reviewers and photos share the session partition; neither may show
+	// up as feedback.
+	mustCreatePhoto(t, s, photo(sid, "h1"))
+	mustCreateReviewer(t, s, reviewer(sid, "tok"))
+
+	got, _ = s.ListFeedback(ctx, sid, alice)
+	if len(got) != 2 || got[0].PhotoID != p1 || got[1].PhotoID != p2 {
+		t.Fatalf("alice's feedback = %+v, want p1, p2 in order", got)
+	}
+
+	for range 2 { // idempotent
+		if err := s.DeleteFeedback(ctx, sid, alice, p1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, _ = s.ListFeedback(ctx, sid, alice)
+	if len(got) != 1 || got[0].PhotoID != p2 {
+		t.Errorf("after delete: %+v", got)
+	}
+	if bobs, _ := s.ListFeedback(ctx, sid, bob); len(bobs) != 1 {
+		t.Errorf("deleting alice's feedback touched bob's: %+v", bobs)
 	}
 }
 

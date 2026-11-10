@@ -54,4 +54,17 @@ type Store interface {
 	// reviewer doesn't exist.
 	SetReviewerExpiry(ctx context.Context, sessionID, reviewerID string, expiresAt time.Time) error
 	RevokeReviewer(ctx context.Context, sessionID, reviewerID string) error
+
+	// UpdateFeedback applies patch to a reviewer's feedback on a photo,
+	// creating it if needed, and sets UpdatedAt. The update is atomic, so
+	// concurrent patches to different fields don't overwrite each other.
+	// It returns the feedback as stored afterwards. Callers check that the
+	// photo and reviewer exist.
+	UpdateFeedback(ctx context.Context, sessionID, reviewerID, photoID string, patch model.FeedbackPatch, updatedAt time.Time) (model.Feedback, error)
+	// DeleteFeedback removes a reviewer's feedback on a photo. Deleting
+	// feedback that doesn't exist is not an error.
+	DeleteFeedback(ctx context.Context, sessionID, reviewerID, photoID string) error
+	// ListFeedback returns one reviewer's feedback in a session, in photo
+	// ID order.
+	ListFeedback(ctx context.Context, sessionID, reviewerID string) ([]model.Feedback, error)
 }
