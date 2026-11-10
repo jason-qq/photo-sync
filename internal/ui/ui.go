@@ -1,9 +1,13 @@
-// Package ui serves the owner web UI: a small static single-page app that
-// talks to the API with the owner API key (pasted at sign-in and kept in
-// the browser's sessionStorage).
+// Package ui serves the web UIs as small static pages that call the API:
 //
-// The files are embedded into the binary, so the API server needs no
-// separate asset directory or build step.
+//   - / (index.html, app.js): the owner UI. Sign-in exchanges the API key
+//     for an HttpOnly session cookie; the page never stores the key.
+//   - /r (review.html, review.js): the reviewer page, opened from a link
+//     whose token is in the URL fragment.
+//
+// common.js holds code both pages share. The files are embedded into the
+// binary, so the API server needs no separate asset directory or build
+// step.
 package ui
 
 import (
@@ -16,6 +20,10 @@ import (
 
 //go:embed static
 var files embed.FS
+
+// ReviewPagePath is where the reviewer page is served; reviewer links are
+// ReviewPagePath + "#" + token (see api.ReviewLinkPath).
+const ReviewPagePath = "/r"
 
 var contentTypes = map[string]string{
 	".css":  "text/css; charset=utf-8",
@@ -63,6 +71,12 @@ func Handler(cfg Config) http.Handler {
 		// Embedded files have no modification time, so revalidate every
 		// load; a rebuilt binary is picked up immediately.
 		h.Set("Cache-Control", "no-cache")
+		// The reviewer page lives at /r (links are /r#<token>).
+		if r.URL.Path == ReviewPagePath {
+			h.Set("Content-Type", contentTypes[".html"])
+			http.ServeFileFS(w, r, static, "review.html")
+			return
+		}
 		// Set types explicitly: Go otherwise consults the OS (on Windows,
 		// the registry), and with nosniff a wrong type breaks the page.
 		if ct, ok := contentTypes[path.Ext(r.URL.Path)]; ok {

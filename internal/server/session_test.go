@@ -1,6 +1,10 @@
 package server
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -49,6 +53,55 @@ func TestSessionToken(t *testing.T) {
 		if s.validSession(bad) {
 			t.Errorf("malformed token %q accepted", bad)
 		}
+	}
+}
+
+// Owner cookies issued before the signing code was generalized must keep
+// working: v1.<exp>.<HMAC(purpose + exp)>.
+func TestOwnerTokenFormatUnchanged(t *testing.T) {
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	s := testServer("secret-one-secret-one-secret-one", now)
+	exp := now.Add(time.Hour)
+	e := strconv.FormatInt(exp.Unix(), 10)
+	m := hmac.New(sha256.New, []byte("secret-one-secret-one-secret-one"))
+	m.Write([]byte("photosync owner session v1\n" + e))
+	legacy := "v1." + e + "." + base64.RawURLEncoding.EncodeToString(m.Sum(nil))
+	if got := s.newSession(exp); got != legacy {
+		t.Errorf("owner token = %q, want legacy format %q", got, legacy)
+	}
+}
+
+func TestReviewerToken(t *testing.T) {
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	s := testServer("secret-one-secret-one-secret-one", now)
+	tok := s.newReviewerSession(now.Add(time.Hour), "SID123", "RID456")
+
+	sid, rid, ok := s.reviewerSession(tok)
+	if !ok || sid != "SID123" || rid != "RID456" {
+		t.Fatalf("reviewerSession = %q %q %v", sid, rid, ok)
+	}
+
+	// Swapping in another reviewer's ID breaks the signature.
+	if _, _, ok := s.reviewerSession(strings.Replace(tok, "RID456", "RID999", 1)); ok {
+		t.Error("token with edited reviewer accepted")
+	}
+	// The two cookie kinds aren't interchangeable.
+	owner := s.newSession(now.Add(time.Hour))
+	if _, _, ok := s.reviewerSession(owner); ok {
+		t.Error("owner token accepted as reviewer token")
+	}
+	if s.validSession(tok) {
+		t.Error("reviewer token accepted as owner token")
+	}
+	// Same shape, wrong purpose: an owner-purpose MAC over reviewer fields.
+	forged := s.sign(ownerPurpose, now.Add(time.Hour), "SID123", "RID456")
+	if _, _, ok := s.reviewerSession(forged); ok {
+		t.Error("reviewer token signed for the owner purpose accepted")
+	}
+	// Expired.
+	later := testServer("secret-one-secret-one-secret-one", now.Add(time.Hour))
+	if _, _, ok := later.reviewerSession(tok); ok {
+		t.Error("expired reviewer token accepted")
 	}
 }
 

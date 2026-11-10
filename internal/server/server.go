@@ -90,6 +90,9 @@ func (s *Server) routes() {
 	s.mux.Handle(api.RouteListReviewers, s.requireOwner(s.handle(s.listReviewers)))
 	s.mux.Handle(api.RouteExtendReviewer, s.requireOwner(s.handle(s.extendReviewer)))
 	s.mux.Handle(api.RouteRevokeReviewer, s.requireOwner(s.handle(s.revokeReviewer)))
+
+	s.mux.Handle(api.RouteReviewerSession, s.handle(s.startReviewerSession))
+	s.mux.Handle(api.RouteReviewerView, s.requireReviewer(s.handle(s.reviewerView)))
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -142,7 +145,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) error {
 		return &httpError{http.StatusUnauthorized, "invalid API key"}
 	}
 	exp := s.now().Add(s.sessionTTL)
-	http.SetCookie(w, sessionCookie(s.newSession(exp), int(s.sessionTTL.Seconds())))
+	http.SetCookie(w, authCookie(SessionCookie, s.newSession(exp), int(s.sessionTTL.Seconds())))
 	w.WriteHeader(http.StatusNoContent)
 	return nil
 }
@@ -150,7 +153,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) error {
 // logout handles api.RouteLogout: deletes the session cookie. The cookie
 // is stateless, so a copy taken earlier stays valid until it expires.
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) error {
-	http.SetCookie(w, sessionCookie("", -1))
+	http.SetCookie(w, authCookie(SessionCookie, "", -1))
 	w.WriteHeader(http.StatusNoContent)
 	return nil
 }
@@ -177,6 +180,8 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, http.StatusBadRequest, ve.Error())
 	case errors.Is(err, review.ErrInvalidExpiry):
 		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, review.ErrInvalidLink):
+		writeError(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, review.ErrSessionNotFound), errors.Is(err, review.ErrPhotoNotFound),
 		errors.Is(err, review.ErrReviewerNotFound):
 		writeError(w, http.StatusNotFound, err.Error())

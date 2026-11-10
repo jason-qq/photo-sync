@@ -150,6 +150,53 @@ func (s *Service) AuthenticateReviewer(ctx context.Context, token string) (model
 	return r, nil
 }
 
+// ActiveReviewer returns the reviewer named by a reviewer session cookie if
+// their link is still active (ErrInvalidLink otherwise). It runs on every
+// reviewer request.
+func (s *Service) ActiveReviewer(ctx context.Context, sessionID, reviewerID string) (model.Reviewer, error) {
+	r, err := s.store.GetReviewer(ctx, sessionID, reviewerID)
+	if errors.Is(err, store.ErrNotFound) {
+		return model.Reviewer{}, ErrInvalidLink
+	}
+	if err != nil {
+		return model.Reviewer{}, fmt.Errorf("get reviewer: %w", err)
+	}
+	if !r.Active(s.now()) {
+		return model.Reviewer{}, ErrInvalidLink
+	}
+	return r, nil
+}
+
+// ReviewerView is what a reviewer sees: their session and its ready photos
+// (filename order, which is shot order), each with view URLs.
+type ReviewerView struct {
+	Session model.Session
+	Photos  []PhotoView // Images always set
+}
+
+// ReviewerView returns the session r reviews, with only ready photos;
+// pending ones are hidden from reviewers.
+func (s *Service) ReviewerView(ctx context.Context, r model.Reviewer) (ReviewerView, error) {
+	sess, err := s.store.GetSession(ctx, r.SessionID)
+	if errors.Is(err, store.ErrNotFound) {
+		return ReviewerView{}, ErrSessionNotFound
+	}
+	if err != nil {
+		return ReviewerView{}, fmt.Errorf("get session: %w", err)
+	}
+	all, err := s.ListPhotos(ctx, r.SessionID)
+	if err != nil {
+		return ReviewerView{}, err
+	}
+	ready := make([]PhotoView, 0, len(all))
+	for _, p := range all {
+		if p.Images != nil {
+			ready = append(ready, p)
+		}
+	}
+	return ReviewerView{Session: sess, Photos: ready}, nil
+}
+
 func (s *Service) getReviewer(ctx context.Context, sessionID, reviewerID string) (model.Reviewer, error) {
 	r, err := s.store.GetReviewer(ctx, sessionID, reviewerID)
 	if errors.Is(err, store.ErrNotFound) {

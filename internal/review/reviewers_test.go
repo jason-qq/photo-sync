@@ -127,6 +127,52 @@ func TestAuthenticateReviewer(t *testing.T) {
 	}
 }
 
+func TestActiveReviewerAndView(t *testing.T) {
+	ctx := context.Background()
+	svc, clk := newClockedService(t)
+	blobs := svc.blobs.(*fakeBlobs)
+	sess := mustSession(t, svc)
+	link, _ := svc.CreateReviewer(ctx, sess.ID, "A", fixedNow.Add(time.Hour))
+	rid := link.Reviewer.ID
+
+	r, err := svc.ActiveReviewer(ctx, sess.ID, rid)
+	if err != nil || r.ID != rid {
+		t.Fatalf("active: %+v, %v", r, err)
+	}
+	if _, err := svc.ActiveReviewer(ctx, sess.ID, "nope"); !errors.Is(err, ErrInvalidLink) {
+		t.Errorf("unknown reviewer: %v", err)
+	}
+	if _, err := svc.ActiveReviewer(ctx, mustSession(t, svc).ID, rid); !errors.Is(err, ErrInvalidLink) {
+		t.Errorf("reviewer under another session: %v", err)
+	}
+
+	// Only ready photos, in filename order.
+	b := readyPhoto(t, svc, blobs, sess.ID, "DSC0002.ARW", strings.Repeat("b", 64))
+	svc.RegisterPhoto(ctx, sess.ID, "DSC0003.ARW", strings.Repeat("c", 64), false) // pending
+	a := readyPhoto(t, svc, blobs, sess.ID, "DSC0001.ARW", hashA)
+	v, err := svc.ReviewerView(ctx, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Session.ID != sess.ID || v.Session.Title != "Shoot" {
+		t.Errorf("session = %+v", v.Session)
+	}
+	if len(v.Photos) != 2 || v.Photos[0].Photo.ID != a.ID || v.Photos[1].Photo.ID != b.ID || v.Photos[0].Images == nil {
+		t.Errorf("photos = %+v", v.Photos)
+	}
+
+	// Expiry and revocation take effect on the next request.
+	clk.t = fixedNow.Add(time.Hour)
+	if _, err := svc.ActiveReviewer(ctx, sess.ID, rid); !errors.Is(err, ErrInvalidLink) {
+		t.Errorf("expired: %v", err)
+	}
+	svc.ExtendReviewer(ctx, sess.ID, rid, clk.t.Add(time.Hour))
+	svc.RevokeReviewer(ctx, sess.ID, rid)
+	if _, err := svc.ActiveReviewer(ctx, sess.ID, rid); !errors.Is(err, ErrInvalidLink) {
+		t.Errorf("revoked: %v", err)
+	}
+}
+
 func TestExtendAndRevoke(t *testing.T) {
 	ctx := context.Background()
 	svc, _ := newClockedService(t)

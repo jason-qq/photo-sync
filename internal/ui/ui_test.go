@@ -24,6 +24,10 @@ func TestServesApp(t *testing.T) {
 		{"/", "text/html", `<script src="app.js"`},
 		{"/app.js", "text/javascript", "function route"},
 		{"/app.css", "text/css", ".grid"},
+		{"/common.js", "text/javascript", "function makeViewer"},
+		{"/r", "text/html", `<script src="review.js"`},
+		{"/review.js", "text/javascript", "/api/review/session"},
+		{"/review.css", "text/css", ".lang-switch"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {

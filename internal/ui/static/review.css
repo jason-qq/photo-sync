@@ -1,0 +1,11 @@
+/* Reviewer page additions on top of app.css. */
+
+.lang-switch { display: flex; gap: 12px; }
+.lang-switch button { color: var(--muted); }
+.lang-switch button[aria-pressed="true"] { color: var(--text); font-weight: 600; }
+
+.reviewing-as { margin: 0 0 4px; }
+.message { max-width: 520px; margin: 10vh auto 0; text-align: center; }
+
+/* Photo number under each thumbnail (reviewers don't see filenames). */
+.tile figcaption { color: var(--muted); }

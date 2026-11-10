@@ -85,12 +85,7 @@ func (e *env) send(method, path, body, auth string, cookie *http.Cookie) *http.R
 }
 
 func sessionCookieFrom(resp *http.Response) *http.Cookie {
-	for _, c := range resp.Cookies() {
-		if c.Name == server.SessionCookie {
-			return c
-		}
-	}
-	return nil
+	return cookieNamed(resp, server.SessionCookie)
 }
 
 func TestBrowserLogin(t *testing.T) {
@@ -234,6 +229,105 @@ func TestReviewerValidation(t *testing.T) {
 		if code := e.do(rt[0], rt[1], "", map[string]any{"name": "A"}, nil); code != http.StatusUnauthorized {
 			t.Errorf("%s %s without key: %d, want 401", rt[0], rt[1], code)
 		}
+	}
+}
+
+func cookieNamed(resp *http.Response, name string) *http.Cookie {
+	for _, c := range resp.Cookies() {
+		if c.Name == name {
+			return c
+		}
+	}
+	return nil
+}
+
+func TestReviewerFlow(t *testing.T) {
+	e := newEnv(t)
+	sid := e.createSession()
+	photos := api.PhotosPath(sid)
+
+	// One ready photo, one pending.
+	var ready, pending api.PhotoResponse
+	e.call("POST", photos, map[string]string{"filename": "SECRET_NAME.ARW", "hash": hashA}, &ready)
+	e.upload(ready.UploadURLs.Thumb)
+	e.upload(ready.UploadURLs.Preview)
+	e.call("POST", api.CompletePath(sid, ready.PhotoID), nil, nil)
+	e.call("POST", photos, map[string]string{"filename": "b.ARW", "hash": strings.Repeat("b", 64)}, &pending)
+
+	var created api.CreateReviewerResponse
+	e.call("POST", api.ReviewersPath(sid), map[string]any{"name": "山田 花子"}, &created)
+	token := strings.TrimPrefix(created.LinkPath, "/r#")
+
+	// Exchange: a wrong token is 403 and sets nothing; the right one sets
+	// a hardened reviewer cookie.
+	resp := e.send("POST", "/api/review/session", `{"token":"wrong"}`, "", nil)
+	if resp.StatusCode != http.StatusForbidden || cookieNamed(resp, server.ReviewerCookie) != nil {
+		t.Fatalf("wrong token: %d", resp.StatusCode)
+	}
+	resp = e.send("POST", "/api/review/session", `{"token":"`+token+`"}`, "", nil)
+	c := cookieNamed(resp, server.ReviewerCookie)
+	if resp.StatusCode != http.StatusNoContent || c == nil {
+		t.Fatalf("exchange: %d, cookie %v", resp.StatusCode, c)
+	}
+	if !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteStrictMode || strings.Contains(c.Value, token) {
+		t.Errorf("cookie: %+v", c)
+	}
+
+	// No or forged cookie: 401.
+	if code := e.send("GET", "/api/review", "", "", nil).StatusCode; code != http.StatusUnauthorized {
+		t.Errorf("no cookie: %d, want 401", code)
+	}
+	forged := *c
+	forged.Value = strings.Replace(c.Value, "v1.", "v1.9", 1)
+	if code := e.send("GET", "/api/review", "", "", &forged).StatusCode; code != http.StatusUnauthorized {
+		t.Errorf("forged cookie: %d, want 401", code)
+	}
+
+	// The view: ready photos only, no filenames or hashes, not cacheable.
+	req, _ := http.NewRequest("GET", e.url+"/api/review", nil)
+	req.AddCookie(c)
+	r, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(r.Body)
+	r.Body.Close()
+	if r.StatusCode != http.StatusOK || r.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("view: %d, Cache-Control %q", r.StatusCode, r.Header.Get("Cache-Control"))
+	}
+	var view api.ReviewerViewResponse
+	json.Unmarshal(raw, &view)
+	if view.Session.Title != "Shoot" || view.Reviewer.Name != "山田 花子" {
+		t.Errorf("view session/reviewer: %+v %+v", view.Session, view.Reviewer)
+	}
+	if len(view.Photos) != 1 || view.Photos[0].ID != ready.PhotoID {
+		t.Fatalf("view photos: %+v", view.Photos)
+	}
+	for _, leak := range []string{"SECRET_NAME", hashA, "b.ARW", pending.PhotoID} {
+		if strings.Contains(string(raw), leak) {
+			t.Errorf("view leaks %q", leak)
+		}
+	}
+	if img, err := http.Get(view.Photos[0].Images.Preview); err != nil || img.StatusCode != http.StatusOK {
+		t.Errorf("preview URL: %v %v", img, err)
+	}
+
+	// Cookies don't cross roles.
+	if code := e.send("GET", "/api/sessions", "", "", c).StatusCode; code != http.StatusUnauthorized {
+		t.Errorf("reviewer cookie on owner route: %d, want 401", code)
+	}
+	owner := sessionCookieFrom(e.send("POST", "/api/login", `{"apiKey":"`+testKey+`"}`, "", nil))
+	if code := e.send("GET", "/api/review", "", "", owner).StatusCode; code != http.StatusUnauthorized {
+		t.Errorf("owner cookie on reviewer route: %d, want 401", code)
+	}
+
+	// Revoking ends access on the very next request, cookie or not.
+	e.call("DELETE", api.ReviewerPath(sid, created.Reviewer.ID), nil, nil)
+	if code := e.send("GET", "/api/review", "", "", c).StatusCode; code != http.StatusForbidden {
+		t.Errorf("after revoke: %d, want 403", code)
+	}
+	if code := e.send("POST", "/api/review/session", `{"token":"`+token+`"}`, "", nil).StatusCode; code != http.StatusForbidden {
+		t.Errorf("exchange after revoke: %d, want 403", code)
 	}
 }
 
