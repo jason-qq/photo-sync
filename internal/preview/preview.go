@@ -21,7 +21,7 @@ import (
 
 const (
 	// ThumbEdge is the maximum long edge, in pixels, of the grid thumbnail.
-	ThumbEdge = 400
+	ThumbEdge = 800
 	// PreviewEdge is the maximum long edge, in pixels, of the judging preview.
 	// Images smaller than this are not upscaled.
 	PreviewEdge = 2048

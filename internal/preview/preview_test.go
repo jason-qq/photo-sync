@@ -81,10 +81,10 @@ func TestGenerateSizes(t *testing.T) {
 		thumbW, thumbH     int
 		previewW, previewH int
 	}{
-		{"landscape", 1, 3000, 2000, 400, 266, 2048, 1365},
-		{"portrait via orientation 6", 6, 3000, 2000, 266, 400, 1365, 2048},
-		{"portrait via orientation 8", 8, 3000, 2000, 266, 400, 1365, 2048},
-		{"small source not upscaled", 1, 1616, 1080, 400, 267, 1616, 1080},
+		{"landscape", 1, 3000, 2000, 800, 533, 2048, 1365},
+		{"portrait via orientation 6", 6, 3000, 2000, 533, 800, 1365, 2048},
+		{"portrait via orientation 8", 8, 3000, 2000, 533, 800, 1365, 2048},
+		{"small source not upscaled", 1, 1616, 1080, 800, 534, 1616, 1080},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

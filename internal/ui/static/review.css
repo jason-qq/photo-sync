@@ -12,6 +12,15 @@
 .message { max-width: 520px; margin: 10vh auto 0; text-align: center; }
 .hint { margin: -12px 0 16px; font-size: 0.9rem; }
 
+/* Reviewers judge from the grid, so tiles are about twice the owner's:
+   one photo per row on phones, ~360 px columns on wider screens. Square
+   photo areas suit both portrait and landscape shots. */
+.grid { grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 16px; }
+.tile img { aspect-ratio: 1 / 1; }
+@media (max-width: 600px) {
+  .grid { grid-template-columns: 1fr; gap: 14px; }
+}
+
 /* Tiles: number, verdict buttons, star summary. Reviewers don't see
    filenames. (Verdict colours and accepted/rejected tiles: app.css.) */
 .tile-meta {
@@ -34,20 +43,28 @@
   padding: 6px 8px 8px;
 }
 
-/* Verdict toggle buttons (grid and viewer). */
-.verdict { padding: 4px 10px; font-size: 0.85rem; }
+/* Verdict toggle buttons (grid and viewer): a green ✓ and a red ✕; when
+   chosen, the button fills with that colour. */
+.verdict { padding: 6px 18px; line-height: 0; }
+.verdict.accept { color: var(--accept); }
+.verdict.reject { color: var(--reject); }
 .verdict.accept[aria-pressed="true"] { background: var(--accept); border-color: var(--accept); color: #000; }
 .verdict.reject[aria-pressed="true"] { background: var(--reject); border-color: var(--reject); color: #000; }
-.tile .verdict {
-  padding: 4px 6px;
-  font-size: 0.8rem;
-  /* Long labels (e.g. 不採用 at narrow widths) shrink instead of
-     overflowing the tile. */
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.verdict .icon, .inline-verdict .icon {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
+.verdict .icon { width: 26px; height: 26px; }
+.tile .verdict { padding: 6px; }
+.tile .verdict .icon { margin: 0 auto; display: block; }
+/* The icons inside the hint text. */
+.inline-verdict { display: inline-block; vertical-align: -0.2em; }
+.inline-verdict .icon { width: 1.15em; height: 1.15em; display: block; }
+.inline-verdict.accept { color: var(--accept); }
+.inline-verdict.reject { color: var(--reject); }
 
 /* Viewer feedback panel controls (panel layout: app.css). */
 .viewer-feedback .row { display: flex; align-items: center; gap: 8px; }

@@ -32,7 +32,7 @@ not through the API code.
 
 1. The **uploader** hashes each raw file and registers it with the API. The API dedupes by
    hash within a session and, for new photos, returns short-lived signed upload URLs.
-2. The uploader generates two JPEGs from the raw's embedded preview (a 400 px thumbnail and
+2. The uploader generates two JPEGs from the raw's embedded preview (an 800 px thumbnail and
    a 2048 px preview) and uploads them **directly** to storage. The image bytes never pass
    through the API.
 3. The uploader calls `complete`; the API checks both files exist and marks the photo

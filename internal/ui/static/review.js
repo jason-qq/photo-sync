@@ -32,7 +32,8 @@ const STRINGS = {
     reviewingAs: "Reviewing as {name}",
     validUntil: "This link is valid until {date}.",
     photoCount: (n) => (n === 1 ? "1 photo" : `${n} photos`),
-    hint: "Tap Accept or Reject. Open a photo to add stars or a comment.",
+    // {accept} and {reject} are drawn as the ✓ and ✕ icons.
+    hint: "Tap {accept} for photos you like and {reject} for ones you don't. Open a photo to add stars or a comment.",
     noPhotos: "There are no photos to review yet.",
     invalidLink: "This review link is no longer valid. Please ask the photographer for a new one.",
     noSession: "Please open the review link you were sent.",
@@ -61,7 +62,7 @@ const STRINGS = {
     reviewingAs: "レビュー担当: {name}",
     validUntil: "このリンクの有効期限: {date}",
     photoCount: (n) => `写真 ${n} 枚`,
-    hint: "「採用」か「不採用」を選んでください。写真を開くと、評価やコメントを追加できます。",
+    hint: "気に入った写真には {accept}、そうでない写真には {reject} をタップしてください。写真を開くと、評価やコメントを追加できます。",
     noPhotos: "レビューする写真はまだありません。",
     invalidLink: "このレビューリンクは無効になりました。撮影者に新しいリンクを依頼してください。",
     noSession: "送られたレビュー用リンクを開いてください。",
@@ -247,15 +248,41 @@ document.getElementById("viewer").addEventListener("close", () => {
   fill(panel);
 });
 
+// verdictIcon draws a check (accept) or cross (reject). The buttons show
+// these instead of words: a reviewer found the translated words unclear,
+// and a green ✓ / red ✕ needs no translation. Inline SVG rather than ✓/✕
+// characters, which some phone fonts draw as colour emoji or not at all.
+function verdictIcon(value) {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("class", "icon");
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS(ns, "path");
+  path.setAttribute("d", value === "accept" ? "M4.5 12.5l5 5L19.5 7" : "M6.5 6.5l11 11M17.5 6.5l-11 11");
+  svg.append(path);
+  return svg;
+}
+
+// withIcons renders a translated string, replacing {accept} and {reject}
+// with the verdict icons.
+function withIcons(text) {
+  return text.split(/\{(accept|reject)\}/).map((part, i) =>
+    i % 2 ? h("span", { class: `inline-verdict ${part}` }, verdictIcon(part)) : part);
+}
+
 function verdictButtons(id, small) {
   const f = fbOf(id);
   const btn = (value) => h("button", {
     type: "button",
     class: `verdict ${value}`,
+    // The word is still there for screen readers and as a tooltip.
+    "aria-label": t(value),
+    title: t(value),
     "aria-pressed": String(f.verdict === value),
     // Tapping the active verdict again clears it.
     onclick: () => save(id, { verdict: f.verdict === value ? null : value }),
-  }, t(value));
+  }, verdictIcon(value));
   return small ? [btn("accept"), btn("reject")] : h("div", { class: "row" }, btn("accept"), btn("reject"));
 }
 
@@ -374,7 +401,7 @@ function viewNodes(v) {
       [formatDay(v.session.date), STRINGS[lang].photoCount(v.photos.length), t("validUntil", { date: expires })].join(" · ")),
     v.photos.length === 0
       ? h("p", { class: "muted" }, t("noPhotos"))
-      : h("div", {}, h("p", { class: "hint muted" }, t("hint")),
+      : h("div", {}, h("p", { class: "hint muted" }, ...withIcons(STRINGS[lang].hint)),
         h("div", { class: "grid" }, ...v.photos.map((p, i) => tile(p, i, v.photos)))),
   ];
 }
