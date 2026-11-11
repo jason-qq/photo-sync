@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"slices"
 	"strings"
 	"time"
@@ -359,10 +360,12 @@ func (d *Dynamo) CreatePhoto(ctx context.Context, p model.Photo) (model.Photo, b
 			return existing, false, err
 		case reason(iPhoto) == "ConditionalCheckFailed":
 			return model.Photo{}, false, ErrExists
-		case reason(iHash) == "TransactionConflict" && attempt < maxConflictRetries:
-			// A concurrent transaction is claiming the same hash. Retry;
-			// the next attempt will see its outcome as a condition failure.
-			if err := sleep(ctx, time.Duration(attempt)*20*time.Millisecond); err != nil {
+		case conflicted(tce) && attempt < maxConflictRetries:
+			// Lost a race with another transaction: one claiming the same
+			// hash (the next attempt sees its outcome as a condition
+			// failure), or any other photo upload to this session, since
+			// every one checks the session item. Retry.
+			if err := conflictBackoff(ctx, attempt); err != nil {
 				return model.Photo{}, false, err
 			}
 			continue
@@ -371,9 +374,29 @@ func (d *Dynamo) CreatePhoto(ctx context.Context, p model.Photo) (model.Photo, b
 	}
 }
 
-// maxConflictRetries bounds CreatePhoto attempts when concurrent uploads of
-// the same file collide.
+// maxConflictRetries bounds transaction attempts that keep losing races
+// with concurrent transactions on the same items.
 const maxConflictRetries = 5
+
+// conflicted reports whether a cancelled transaction lost a race with a
+// concurrent transaction on one of its items. DynamoDB counts transactions
+// that touch the same item as conflicting even when both only
+// ConditionCheck it, so creates in one session (parallel photo uploads,
+// which all check the session item) occasionally conflict.
+func conflicted(tce *types.TransactionCanceledException) bool {
+	for _, r := range tce.CancellationReasons {
+		if aws.ToString(r.Code) == "TransactionConflict" {
+			return true
+		}
+	}
+	return false
+}
+
+// conflictBackoff waits before retry attempt+1: 20 ms × attempt plus up to
+// 20 ms of jitter, so racing requests don't retry in lockstep.
+func conflictBackoff(ctx context.Context, attempt int) error {
+	return sleep(ctx, time.Duration(attempt)*20*time.Millisecond+rand.N(20*time.Millisecond))
+}
 
 func sleep(ctx context.Context, d time.Duration) error {
 	t := time.NewTimer(d)
@@ -457,7 +480,7 @@ func (d *Dynamo) CreateReviewer(ctx context.Context, r model.Reviewer) error {
 		iToken
 		iReviewer
 	)
-	_, err = d.db.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+	in := &dynamodb.TransactWriteItemsInput{
 		TransactItems: []types.TransactWriteItem{
 			iSession: {ConditionCheck: &types.ConditionCheck{
 				TableName:           &d.table,
@@ -467,24 +490,32 @@ func (d *Dynamo) CreateReviewer(ctx context.Context, r model.Reviewer) error {
 			iToken:    {Put: &types.Put{TableName: &d.table, Item: tok, ConditionExpression: notExists}},
 			iReviewer: {Put: &types.Put{TableName: &d.table, Item: rev, ConditionExpression: notExists}},
 		},
-	})
-	var tce *types.TransactionCanceledException
-	if !errors.As(err, &tce) {
-		return err // nil on success
 	}
-	failed := func(i int) bool {
-		return i < len(tce.CancellationReasons) &&
-			aws.ToString(tce.CancellationReasons[i].Code) == "ConditionalCheckFailed"
+	for attempt := 1; ; attempt++ {
+		_, err = d.db.TransactWriteItems(ctx, in)
+		var tce *types.TransactionCanceledException
+		if !errors.As(err, &tce) {
+			return err // nil on success
+		}
+		failed := func(i int) bool {
+			return i < len(tce.CancellationReasons) &&
+				aws.ToString(tce.CancellationReasons[i].Code) == "ConditionalCheckFailed"
+		}
+		switch {
+		case failed(iSession):
+			return ErrNotFound
+		case failed(iToken), failed(iReviewer):
+			return ErrExists
+		case conflicted(tce) && attempt < maxConflictRetries:
+			// Most likely a photo upload to the same session, which also
+			// checks the session item. Retry.
+			if err := conflictBackoff(ctx, attempt); err != nil {
+				return err
+			}
+			continue
+		}
+		return err
 	}
-	switch {
-	case failed(iSession):
-		return ErrNotFound
-	case failed(iToken), failed(iReviewer):
-		return ErrExists
-	}
-	// Tokens are random, so a concurrent create of the same token (the
-	// only source of TransactionConflict here) isn't worth retrying.
-	return err
 }
 
 func (d *Dynamo) GetReviewer(ctx context.Context, sessionID, reviewerID string) (model.Reviewer, error) {

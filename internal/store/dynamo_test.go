@@ -65,10 +65,14 @@ func newTable(t *testing.T, db *dynamodb.Client) string {
 
 // conflictInjector fails the first n TransactWriteItems calls with the
 // TransactionCanceledException real DynamoDB returns when a concurrent
-// transaction holds the hash lock (DynamoDB Local serializes transactions,
-// so it never does). Other requests pass through.
+// transaction touches the same item (DynamoDB Local serializes
+// transactions, so it never does). item is the index of the conflicting
+// item: 0 is the session item both CreatePhoto and CreateReviewer check
+// (parallel uploads to one session), 1 is CreatePhoto's hash lock
+// (concurrent uploads of the same file). Other requests pass through.
 type conflictInjector struct {
 	next     aws.HTTPClient
+	item     int
 	n        atomic.Int32
 	injected atomic.Int32
 }
@@ -76,10 +80,15 @@ type conflictInjector struct {
 func (c *conflictInjector) Do(req *http.Request) (*http.Response, error) {
 	if strings.HasSuffix(req.Header.Get("X-Amz-Target"), ".TransactWriteItems") && c.n.Add(-1) >= 0 {
 		c.injected.Add(1)
-		// Reasons are indexed like CreatePhoto's items: session, hash, photo.
+		codes := []string{"None", "None", "None"}
+		codes[c.item] = "TransactionConflict"
+		var reasons []string
+		for _, code := range codes {
+			reasons = append(reasons, `{"Code":"`+code+`"}`)
+		}
 		body := `{"__type":"com.amazonaws.dynamodb.v20120810#TransactionCanceledException",` +
-			`"Message":"Transaction cancelled [None, TransactionConflict, None]",` +
-			`"CancellationReasons":[{"Code":"None"},{"Code":"TransactionConflict","Message":"Transaction is ongoing for the item"},{"Code":"None"}]}`
+			`"Message":"Transaction cancelled [` + strings.Join(codes, ", ") + `]",` +
+			`"CancellationReasons":[` + strings.Join(reasons, ",") + `]}`
 		return &http.Response{
 			StatusCode: http.StatusBadRequest,
 			Header:     http.Header{"Content-Type": {"application/x-amz-json-1.0"}},
@@ -91,33 +100,61 @@ func (c *conflictInjector) Do(req *http.Request) (*http.Response, error) {
 }
 
 func TestDynamoConflictRetry(t *testing.T) {
-	inj := &conflictInjector{next: http.DefaultClient}
-	db := localClient(t, inj)
-	s := NewDynamo(db, newTable(t, db))
-	sid := newSession(t, s)
+	createPhoto := func(s *Dynamo, sid string) error {
+		p, created, err := s.CreatePhoto(ctx, photo(sid, model.NewID()))
+		if err == nil && !created {
+			return errors.New("not created")
+		}
+		if err == nil {
+			_, err = s.GetPhoto(ctx, sid, p.ID)
+		}
+		return err
+	}
+	createReviewer := func(s *Dynamo, sid string) error {
+		r := reviewer(sid, model.NewID())
+		if err := s.CreateReviewer(ctx, r); err != nil {
+			return err
+		}
+		_, err := s.GetReviewer(ctx, sid, r.ID)
+		return err
+	}
+	tests := []struct {
+		name   string
+		item   int
+		create func(*Dynamo, string) error
+	}{
+		// The 500 seen in production: parallel uploads to one session.
+		{"photo, session item", 0, createPhoto},
+		{"photo, hash lock", 1, createPhoto},
+		{"reviewer, session item", 0, createReviewer},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inj := &conflictInjector{next: http.DefaultClient, item: tt.item}
+			db := localClient(t, inj)
+			s := NewDynamo(db, newTable(t, db))
+			sid := newSession(t, s)
 
-	// Conflicts below the retry limit: retried, then the photo is created.
-	inj.n.Store(maxConflictRetries - 1)
-	p, created, err := s.CreatePhoto(ctx, photo(sid, "h1"))
-	if err != nil || !created {
-		t.Fatalf("after %d conflicts: created=%v err=%v", maxConflictRetries-1, created, err)
-	}
-	if got := inj.injected.Load(); got != maxConflictRetries-1 {
-		t.Errorf("injected %d conflicts, want %d", got, maxConflictRetries-1)
-	}
-	if _, err := s.GetPhoto(ctx, sid, p.ID); err != nil {
-		t.Errorf("photo not stored: %v", err)
-	}
+			// Conflicts below the retry limit: retried, then created.
+			inj.n.Store(maxConflictRetries - 1)
+			if err := tt.create(s, sid); err != nil {
+				t.Fatalf("after %d conflicts: %v", maxConflictRetries-1, err)
+			}
+			if got := inj.injected.Load(); got != maxConflictRetries-1 {
+				t.Errorf("injected %d conflicts, want %d", got, maxConflictRetries-1)
+			}
 
-	// Persistent conflict: gives up with the DynamoDB error.
-	inj.injected.Store(0)
-	inj.n.Store(100)
-	_, _, err = s.CreatePhoto(ctx, photo(sid, "h2"))
-	var tce *types.TransactionCanceledException
-	if !errors.As(err, &tce) {
-		t.Fatalf("persistent conflict: err = %v, want TransactionCanceledException", err)
-	}
-	if got := inj.injected.Load(); got != maxConflictRetries {
-		t.Errorf("attempts = %d, want %d", got, maxConflictRetries)
+			// Persistent conflict: gives up with the DynamoDB error.
+			inj.injected.Store(0)
+			inj.n.Store(100)
+			err := tt.create(s, sid)
+			var tce *types.TransactionCanceledException
+			if !errors.As(err, &tce) {
+				t.Fatalf("persistent conflict: err = %v, want TransactionCanceledException", err)
+			}
+			if got := inj.injected.Load(); got != maxConflictRetries {
+				t.Errorf("attempts = %d, want %d", got, maxConflictRetries)
+			}
+		})
 	}
 }
