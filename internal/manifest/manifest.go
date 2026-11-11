@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // FileName is the manifest's name inside a session folder.
@@ -31,6 +32,18 @@ type Manifest struct {
 type Entry struct {
 	PhotoID string `json:"photoId"`
 	Hash    string `json:"hash"`
+	// Size and ModTime are the file's size and modification time when it
+	// was hashed. A file that still matches both is assumed unchanged and
+	// skipped without reading it. Missing in manifests from older
+	// versions; filled in on the next run.
+	Size    int64     `json:"size,omitempty"`
+	ModTime time.Time `json:"modTime,omitzero"`
+}
+
+// Unchanged reports whether a file with this size and modification time
+// is the one e recorded.
+func (e Entry) Unchanged(size int64, modTime time.Time) bool {
+	return e.Size > 0 && e.Size == size && e.ModTime.Equal(modTime)
 }
 
 // Load reads the manifest in dir. A missing manifest yields an empty one

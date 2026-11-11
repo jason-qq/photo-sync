@@ -80,7 +80,9 @@ Runs on the photographer's machine against one folder of raw files (Sony `.ARW`,
   order and the same filename in two folders stays distinct; hidden files and folders are
   skipped;
 - creates a session on first run and records it in `.review-manifest.json` inside the
-  folder, so re-runs reuse the session and skip photos already uploaded;
+  folder, so re-runs reuse the session and skip photos already uploaded. Files whose size
+  and modified time haven't changed are skipped without being read, so re-running a
+  folder after a failure only works on what's left;
 - processes files in parallel (`-workers`), extracting previews in pure Go: no exiftool,
   libvips or other installs;
 - resumes interrupted uploads on the next run; `-force` re-uploads previews for existing

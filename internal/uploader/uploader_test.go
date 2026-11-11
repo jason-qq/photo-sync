@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"photo-sync/internal/api"
 	"photo-sync/internal/apiclient"
@@ -216,14 +217,87 @@ func TestRunStopsOnBadKey(t *testing.T) {
 	h := newHarness(t)
 	h.run(false) // create the session with the good key
 
+	// Force, as unchanged files would otherwise be skipped without asking
+	// the API.
 	bad := apiclient.New(h.env.URL, "wrong-key")
 	h.out.Reset()
-	sum, err := Run(context.Background(), Config{Dir: h.dir, Client: bad, APIURL: h.env.URL, Workers: 1, Out: &h.out})
+	sum, err := Run(context.Background(), Config{Dir: h.dir, Client: bad, APIURL: h.env.URL, Force: true, Workers: 1, Out: &h.out})
 	if err == nil || !strings.Contains(err.Error(), "401") {
 		t.Fatalf("err = %v, want 401", err)
 	}
 	if sum.Failed != 0 || strings.Contains(h.out.String(), "FAILED") {
 		t.Errorf("expected no per-file failures, got %+v:\n%s", sum, h.out.String())
+	}
+}
+
+// runOffline reruns the folder with a client whose every API call fails,
+// so it only succeeds if no file needed the API.
+func (h *harness) runOffline() (Summary, error) {
+	h.t.Helper()
+	h.out.Reset()
+	bad := apiclient.New(h.env.URL, "wrong-key")
+	return Run(context.Background(), Config{Dir: h.dir, Client: bad, APIURL: h.env.URL, Workers: 2, Out: &h.out})
+}
+
+// A rerun skips files the manifest has with the same size and modification
+// time without reading them or calling the API.
+func TestRunSkipsUnchangedWithoutAPI(t *testing.T) {
+	h := newHarness(t)
+	h.run(false)
+	for name, e := range h.manifest().Photos {
+		if e.Size == 0 || e.ModTime.IsZero() {
+			t.Errorf("%s: manifest entry missing size/modTime: %+v", name, e)
+		}
+	}
+
+	sum, err := h.runOffline()
+	if err != nil {
+		t.Fatalf("rerun called the API: %v\n%s", err, h.out.String())
+	}
+	expect(t, sum, 0, 3, 0)
+	if !strings.Contains(h.out.String(), "3 unchanged since last run") {
+		t.Errorf("expected unchanged count, got:\n%s", h.out.String())
+	}
+}
+
+// A file whose modification time changed (e.g. copied again) is checked
+// against the API, but not re-uploaded if its content is the same.
+func TestRunChecksTouchedFile(t *testing.T) {
+	h := newHarness(t)
+	h.run(false)
+	later := time.Now().Add(time.Hour)
+	if err := os.Chtimes(filepath.Join(h.dir, "DSC0001.ARW"), later, later); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := h.runOffline(); err == nil {
+		t.Fatal("touched file wasn't checked against the API")
+	}
+	expect(t, h.run(false), 0, 3, 0) // same hash: already uploaded
+	if _, err := h.runOffline(); err != nil {
+		t.Fatalf("new modification time not recorded: %v", err)
+	}
+}
+
+// Manifests written before size/modTime existed are filled in by the next
+// run, after which reruns skip without the API.
+func TestRunBackfillsOldManifest(t *testing.T) {
+	h := newHarness(t)
+	h.run(false)
+	m := h.manifest()
+	for name, e := range m.Photos {
+		m.Photos[name] = manifest.Entry{PhotoID: e.PhotoID, Hash: e.Hash}
+	}
+	if err := m.Save(h.dir); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := h.runOffline(); err == nil {
+		t.Fatal("old entries were trusted without size/modTime")
+	}
+	expect(t, h.run(false), 0, 3, 0)
+	if _, err := h.runOffline(); err != nil {
+		t.Fatalf("manifest not backfilled: %v", err)
 	}
 }
 

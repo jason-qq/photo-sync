@@ -82,7 +82,28 @@ func Run(ctx context.Context, cfg Config) (Summary, error) {
 		return Summary{}, err
 	}
 	sum := Summary{SessionID: sessionID}
-	fmt.Fprintf(cfg.Out, "session %s: %d raw file(s), %d worker(s)\n", sessionID, len(files), cfg.Workers)
+
+	// Files the manifest already has, with the same size and modification
+	// time, were uploaded by an earlier run: skip them without reading
+	// (raws are tens of MB) or asking the API. -force checks everything.
+	var todo []string
+	for _, rel := range files {
+		if !cfg.Force {
+			e, ok := m.Photos[rel]
+			fi, err := os.Stat(filepath.Join(cfg.Dir, filepath.FromSlash(rel)))
+			if ok && err == nil && e.Unchanged(fi.Size(), fi.ModTime()) {
+				sum.Skipped++
+				continue
+			}
+		}
+		todo = append(todo, rel)
+	}
+	fmt.Fprintf(cfg.Out, "session %s: %d raw file(s)", sessionID, len(files))
+	if sum.Skipped > 0 {
+		fmt.Fprintf(cfg.Out, ", %d unchanged since last run (skipped)", sum.Skipped)
+	}
+	fmt.Fprintf(cfg.Out, "; checking %d with %d worker(s)\n", len(todo), cfg.Workers)
+	files = todo
 
 	// A fatal error (e.g. bad API key) cancels this context to stop the
 	// whole run instead of failing every file the same way.
@@ -139,9 +160,12 @@ func Run(ctx context.Context, cfg Config) (Summary, error) {
 			if prev, ok := m.Photos[r.name]; ok && prev.Hash != r.hash {
 				note = " (file changed since last run)"
 			}
-			m.Photos[r.name] = manifest.Entry{PhotoID: r.photoID, Hash: r.hash}
-			if err := m.Save(cfg.Dir); err != nil && saveErr == nil {
-				saveErr = fmt.Errorf("save manifest: %w", err)
+			e := manifest.Entry{PhotoID: r.photoID, Hash: r.hash, Size: r.size, ModTime: r.modTime}
+			if prev, ok := m.Photos[r.name]; !ok || prev.PhotoID != e.PhotoID || prev.Hash != e.Hash || !prev.Unchanged(e.Size, e.ModTime) {
+				m.Photos[r.name] = e
+				if err := m.Save(cfg.Dir); err != nil && saveErr == nil {
+					saveErr = fmt.Errorf("save manifest: %w", err)
+				}
 			}
 		}
 		switch {
@@ -218,8 +242,10 @@ type result struct {
 	name     string // path relative to Config.Dir; manifest key and API filename
 	hash     string
 	photoID  string
-	uploaded bool   // false means skipped
-	action   string // "uploaded" or "re-uploaded"
+	size     int64     // file size when read
+	modTime  time.Time // file modification time when read
+	uploaded bool      // false means skipped
+	action   string    // "uploaded" or "re-uploaded"
 	dur      time.Duration
 	err      error
 }
@@ -234,7 +260,15 @@ func process(ctx context.Context, cfg Config, sessionID, rel string) result {
 		return r
 	}
 
-	raw, err := os.ReadFile(filepath.Join(cfg.Dir, filepath.FromSlash(rel)))
+	// Stat before reading: if the file changes while it's read, the next
+	// run sees a newer modification time and checks it again.
+	path := filepath.Join(cfg.Dir, filepath.FromSlash(rel))
+	fi, err := os.Stat(path)
+	if err != nil {
+		return fail("read", err)
+	}
+	r.size, r.modTime = fi.Size(), fi.ModTime()
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		return fail("read", err)
 	}
