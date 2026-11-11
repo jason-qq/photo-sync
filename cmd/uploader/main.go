@@ -1,6 +1,6 @@
-// Command uploader uploads a folder of raw files (Sony ARW, Nikon NEF) to a
-// review session. Raws never leave the machine: only resized, EXIF-free JPEG
-// previews are uploaded.
+// Command uploader uploads a folder of raw files (Sony ARW, Nikon NEF),
+// including those in its subfolders, to a review session. Raws never leave
+// the machine: only resized, EXIF-free JPEG previews are uploaded.
 //
 // Usage:
 //

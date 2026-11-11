@@ -226,6 +226,33 @@ func TestRunStopsOnBadKey(t *testing.T) {
 	}
 }
 
+// Cameras start a new folder after file number 9999, so the same filename
+// can appear in several subfolders. Each must be uploaded and tracked
+// separately; hidden folders are skipped.
+func TestRunRecursesIntoSubfolders(t *testing.T) {
+	h := newHarness(t)
+	for i, sub := range []string{"100MSDCF", "101MSDCF", ".trash"} {
+		dir := filepath.Join(h.dir, "DCIM", sub)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, dir, "DSC00001.ARW", fakeRaw(t, i+4))
+	}
+
+	expect(t, h.run(false), 5, 0, 0) // 3 top-level + 2 in subfolders
+	m := h.manifest()
+	for _, key := range []string{"DSC0001.ARW", "DCIM/100MSDCF/DSC00001.ARW", "DCIM/101MSDCF/DSC00001.ARW"} {
+		if _, ok := m.Photos[key]; !ok {
+			t.Errorf("manifest missing %q: %v", key, m.Photos)
+		}
+	}
+	if len(m.Photos) != 5 {
+		t.Errorf("manifest has %d photos, want 5: %v", len(m.Photos), m.Photos)
+	}
+
+	expect(t, h.run(false), 0, 5, 0)
+}
+
 func TestRunNoRaws(t *testing.T) {
 	env := testserver.Start(t)
 	_, err := Run(context.Background(), Config{Dir: t.TempDir(), Client: apiclient.New(env.URL, testserver.APIKey), APIURL: env.URL})

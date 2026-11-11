@@ -1,6 +1,6 @@
 // Package manifest reads and writes the uploader's per-folder state file,
-// which ties a folder of raws to a session and maps each raw filename to its
-// photo ID and hash.
+// which ties a folder of raws to a session and maps each raw file (by path
+// relative to the folder) to its photo ID and hash.
 package manifest
 
 import (
@@ -24,7 +24,7 @@ type Manifest struct {
 	// environment isn't accidentally pointed at another.
 	APIURL    string           `json:"apiUrl,omitempty"`
 	SessionID string           `json:"sessionId,omitempty"`
-	Photos    map[string]Entry `json:"photos"` // raw filename -> entry
+	Photos    map[string]Entry `json:"photos"` // slash-separated path relative to the folder -> entry
 }
 
 // Entry records an uploaded raw.

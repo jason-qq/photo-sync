@@ -75,6 +75,9 @@ Locally it is a plain HTTP server. On AWS the same app runs as a Lambda function
 Runs on the photographer's machine against one folder of raw files (Sony `.ARW`, Nikon
 `.NEF`):
 
+- includes raws in subfolders (e.g. `100MSDCF`, `101MSDCF` after the camera rolls over at
+  file 9999; the same filename in two folders is tracked separately); hidden files and
+  folders are skipped;
 - creates a session on first run and records it in `.review-manifest.json` inside the
   folder, so re-runs reuse the session and skip photos already uploaded;
 - processes files in parallel (`-workers`), extracting previews in pure Go: no exiftool,

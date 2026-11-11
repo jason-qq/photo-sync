@@ -1,4 +1,5 @@
-// Package uploader uploads a folder of raw files to a review session:
+// Package uploader uploads a folder of raw files (including its
+// subfolders) to a review session:
 // hash → register → generate previews → upload → complete, for many files
 // concurrently, recording progress in the folder's manifest.
 package uploader
@@ -10,8 +11,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -55,9 +58,10 @@ type Summary struct {
 // rawExts are the supported raw file extensions (lowercase).
 var rawExts = map[string]bool{".arw": true, ".nef": true}
 
-// Run uploads every raw file in cfg.Dir. Per-file failures are counted in
-// the Summary and don't stop the run; the returned error is for problems
-// with the run as a whole (bad manifest, session creation, cancellation).
+// Run uploads every raw file in cfg.Dir and its subfolders. Per-file
+// failures are counted in the Summary and don't stop the run; the returned
+// error is for problems with the run as a whole (bad manifest, session
+// creation, cancellation).
 func Run(ctx context.Context, cfg Config) (Summary, error) {
 	if cfg.Workers <= 0 {
 		cfg.Workers = min(4, runtime.NumCPU())
@@ -111,8 +115,8 @@ func Run(ctx context.Context, cfg Config) (Summary, error) {
 	var wg sync.WaitGroup
 	for range cfg.Workers {
 		wg.Go(func() {
-			for path := range jobs {
-				results <- process(ctx, cfg, sessionID, path)
+			for rel := range jobs {
+				results <- process(ctx, cfg, sessionID, rel)
 			}
 		})
 	}
@@ -212,7 +216,7 @@ func ensureSession(ctx context.Context, cfg Config, m *manifest.Manifest) (strin
 
 // result is one file's outcome, sent from a worker to the collector.
 type result struct {
-	name     string
+	name     string // path relative to Config.Dir; the manifest key
 	hash     string
 	photoID  string
 	uploaded bool   // false means skipped
@@ -222,15 +226,16 @@ type result struct {
 }
 
 // process runs the full pipeline for one raw file.
-func process(ctx context.Context, cfg Config, sessionID, path string) result {
+// rel is the file's slash-separated path relative to cfg.Dir.
+func process(ctx context.Context, cfg Config, sessionID, rel string) result {
 	start := time.Now()
-	r := result{name: filepath.Base(path)}
+	r := result{name: rel}
 	fail := func(step string, err error) result {
 		r.err = fmt.Errorf("%s: %w", step, err)
 		return r
 	}
 
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(filepath.Join(cfg.Dir, filepath.FromSlash(rel)))
 	if err != nil {
 		return fail("read", err)
 	}
@@ -238,7 +243,7 @@ func process(ctx context.Context, cfg Config, sessionID, path string) result {
 	r.hash = hex.EncodeToString(sum[:])
 
 	reg, created, err := cfg.Client.RegisterPhoto(ctx, sessionID,
-		api.CreatePhotoRequest{Filename: r.name, Hash: r.hash}, cfg.Force)
+		api.CreatePhotoRequest{Filename: path.Base(rel), Hash: r.hash}, cfg.Force)
 	if err != nil {
 		return fail("register", err)
 	}
@@ -277,19 +282,39 @@ func uploadRendition(ctx context.Context, c *apiclient.Client, name, url string,
 	return nil
 }
 
-// findRaws lists supported raw files in dir (not recursive), sorted by name.
+// findRaws lists supported raw files under dir, recursing into subfolders
+// (cameras roll over to a new folder, e.g. 100MSDCF → 101MSDCF, after file
+// number 9999, so the same filename can appear in several folders). It
+// returns slash-separated paths relative to dir in lexical order, so files
+// sort folder by folder. Hidden files and folders are skipped.
 func findRaws(dir string) ([]string, error) {
-	entries, err := os.ReadDir(dir)
+	var files []string
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if p == dir {
+			return nil
+		}
+		hidden := strings.HasPrefix(d.Name(), ".")
+		if d.IsDir() {
+			if hidden {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if hidden || !d.Type().IsRegular() || !rawExts[strings.ToLower(filepath.Ext(p))] {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, p)
+		if err != nil {
+			return err
+		}
+		files = append(files, filepath.ToSlash(rel))
+		return nil
+	})
 	if err != nil {
 		return nil, err
-	}
-	var files []string
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || strings.HasPrefix(name, ".") || !rawExts[strings.ToLower(filepath.Ext(name))] {
-			continue
-		}
-		files = append(files, filepath.Join(dir, name))
 	}
 	if len(files) == 0 {
 		return nil, errors.New("no .ARW or .NEF files found")
