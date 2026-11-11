@@ -14,7 +14,6 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -216,7 +215,7 @@ func ensureSession(ctx context.Context, cfg Config, m *manifest.Manifest) (strin
 
 // result is one file's outcome, sent from a worker to the collector.
 type result struct {
-	name     string // path relative to Config.Dir; the manifest key
+	name     string // path relative to Config.Dir; manifest key and API filename
 	hash     string
 	photoID  string
 	uploaded bool   // false means skipped
@@ -243,7 +242,7 @@ func process(ctx context.Context, cfg Config, sessionID, rel string) result {
 	r.hash = hex.EncodeToString(sum[:])
 
 	reg, created, err := cfg.Client.RegisterPhoto(ctx, sessionID,
-		api.CreatePhotoRequest{Filename: path.Base(rel), Hash: r.hash}, cfg.Force)
+		api.CreatePhotoRequest{Filename: rel, Hash: r.hash}, cfg.Force)
 	if err != nil {
 		return fail("register", err)
 	}
@@ -286,7 +285,8 @@ func uploadRendition(ctx context.Context, c *apiclient.Client, name, url string,
 // (cameras roll over to a new folder, e.g. 100MSDCF → 101MSDCF, after file
 // number 9999, so the same filename can appear in several folders). It
 // returns slash-separated paths relative to dir in lexical order, so files
-// sort folder by folder. Hidden files and folders are skipped.
+// sort folder by folder. The relative path is both the manifest key and the
+// filename sent to the API. Hidden files and folders are skipped.
 func findRaws(dir string) ([]string, error) {
 	var files []string
 	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {

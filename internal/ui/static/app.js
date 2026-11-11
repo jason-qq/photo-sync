@@ -199,6 +199,11 @@ function photosSection(sid, photos, onImageError) {
   const grid = h("div", { class: "grid" });
   const count = h("span", { class: "count muted" });
   const copy = h("button", { type: "button" });
+  const nameCounts = new Map(); // file name -> photos in the session with it
+  for (const p of photos) {
+    const { name } = splitPath(p.filename);
+    nameCounts.set(name, (nameCounts.get(name) || 0) + 1);
+  }
 
   // With several reviewers, a photo matches if any reviewer's feedback
   // does ("accepted" = someone accepted it).
@@ -225,9 +230,16 @@ function photosSection(sid, photos, onImageError) {
     copy.disabled = visible.length === 0;
     copy.onclick = async () => {
       // One per line: paste into Lightroom/Capture One to select keepers.
+      // Those match on the file's name alone, so copy names, not folder
+      // paths. After a camera's counter rolls over, the same name can be in
+      // two folders; pasting it would select both, so say so.
+      const names = [...new Set(visible.map((p) => splitPath(p.filename).name))];
+      const ambiguous = names.filter((n) => nameCounts.get(n) > 1).length;
       try {
-        await navigator.clipboard.writeText(visible.map((p) => p.filename).join("\n"));
-        copy.textContent = "Copied";
+        await navigator.clipboard.writeText(names.join("\n"));
+        copy.textContent = ambiguous === 0
+          ? "Copied"
+          : `Copied (${ambiguous} also in another folder)`;
       } catch {
         copy.textContent = "Copy failed";
       }
@@ -384,11 +396,29 @@ function reviewersPanel(sid, initial, photoCount) {
   return panel;
 }
 
+// splitPath splits a photo's filename, a "/"-separated path relative to the
+// uploaded folder, into its folder ("" at the top level) and file name.
+function splitPath(filename) {
+  const i = filename.lastIndexOf("/");
+  return { folder: filename.slice(0, Math.max(i, 0)), name: filename.slice(i + 1) };
+}
+
+// caption shows the file name first, then its folder (muted), so the name
+// survives when a narrow tile cuts the line short. The full path is the
+// tooltip.
+function caption(photo) {
+  const { folder, name } = splitPath(photo.filename);
+  return h("figcaption", { title: photo.filename },
+    name,
+    folder ? h("span", { class: "folder" }, " " + folder) : null,
+  );
+}
+
 function tile(photo, ready, onImageError) {
   if (!photo.images) {
     return h("figure", { class: "tile" },
       h("div", { class: "placeholder" }, "Uploading…"),
-      h("figcaption", { title: photo.filename }, photo.filename),
+      caption(photo),
     );
   }
   const img = h("img", { src: photo.images.thumb, alt: photo.filename, loading: "lazy" });
@@ -401,7 +431,7 @@ function tile(photo, ready, onImageError) {
       "aria-label": "View " + photo.filename,
       onclick: () => viewer.open(ready, ready.indexOf(photo)),
     }, img),
-    h("figcaption", { title: photo.filename }, photo.filename),
+    caption(photo),
     feedback.length > 0 ? feedbackChips(feedback) : null,
   );
 }

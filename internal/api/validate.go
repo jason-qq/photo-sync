@@ -46,13 +46,28 @@ func (r CreateSessionRequest) Validate() error {
 	return nil
 }
 
+// validRelPath reports whether s is a clean relative path such as
+// "101MSDCF/DSC00001.ARW": "/"-separated, no backslashes, and no empty, "."
+// or ".." segments (so no leading or trailing "/" either).
+func validRelPath(s string) bool {
+	if strings.Contains(s, `\`) {
+		return false
+	}
+	for seg := range strings.SplitSeq(s, "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return false
+		}
+	}
+	return true
+}
+
 // Validate checks r.
 func (r CreatePhotoRequest) Validate() error {
 	if n := utf8.RuneCountInString(r.Filename); n == 0 || n > MaxFilenameLen {
 		return invalid("filename", "required, at most 255 characters")
 	}
-	if strings.ContainsAny(r.Filename, `/\`) || r.Filename == "." || r.Filename == ".." {
-		return invalid("filename", "must be a base name without path separators")
+	if !validRelPath(r.Filename) {
+		return invalid("filename", "must be a relative path using / between folder names")
 	}
 	if !isSHA256Hex(r.Hash) {
 		return invalid("hash", "must be a lowercase hex SHA-256")

@@ -21,6 +21,8 @@ type Env struct {
 	URL string // base URL, e.g. http://127.0.0.1:54321
 	// BlobDir is where uploaded renditions are stored.
 	BlobDir string
+	// Store is the app's store, for checking what the server recorded.
+	Store store.Store
 }
 
 // Start runs the app until the test ends.
@@ -33,15 +35,16 @@ func Start(t testing.TB) *Env {
 	t.Cleanup(ts.Close)
 
 	dir := t.TempDir()
+	st := store.NewMemory()
 	h, err := app.New(app.Config{
 		APIKeyHash:    server.HashAPIKey(APIKey),
 		SessionSecret: []byte("test-session-secret-at-least-32-bytes"),
-		Store:         store.NewMemory(),
+		Store:         st,
 		Blobs:         blob.NewLocal(dir, ts.URL, []byte("secret")),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	mux.Handle("/", h)
-	return &Env{URL: ts.URL, BlobDir: dir}
+	return &Env{URL: ts.URL, BlobDir: dir, Store: st}
 }

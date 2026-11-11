@@ -166,6 +166,7 @@ button.danger { color: var(--danger); }
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.tile figcaption .folder { color: var(--muted); }
 
 /* Viewer */
 dialog#viewer {

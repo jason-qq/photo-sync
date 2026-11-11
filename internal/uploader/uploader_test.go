@@ -10,6 +10,7 @@ import (
 	"image/jpeg"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -248,6 +249,21 @@ func TestRunRecursesIntoSubfolders(t *testing.T) {
 	}
 	if len(m.Photos) != 5 {
 		t.Errorf("manifest has %d photos, want 5: %v", len(m.Photos), m.Photos)
+	}
+
+	// The server gets the relative path, so rollover folders sort in shot
+	// order and same-named files stay distinguishable.
+	photos, err := h.env.Store.ListPhotos(context.Background(), m.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, p := range photos {
+		got = append(got, p.Filename)
+	}
+	want := []string{"DCIM/100MSDCF/DSC00001.ARW", "DCIM/101MSDCF/DSC00001.ARW", "DSC0001.ARW", "DSC0002.arw", "DSC0003.NEF"}
+	if !slices.Equal(got, want) {
+		t.Errorf("server filenames = %v, want %v", got, want)
 	}
 
 	expect(t, h.run(false), 0, 5, 0)

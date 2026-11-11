@@ -76,8 +76,9 @@ Runs on the photographer's machine against one folder of raw files (Sony `.ARW`,
 `.NEF`):
 
 - includes raws in subfolders (e.g. `100MSDCF`, `101MSDCF` after the camera rolls over at
-  file 9999; the same filename in two folders is tracked separately); hidden files and
-  folders are skipped;
+  file 9999). Each photo is named by its path within the folder, so photos stay in shot
+  order and the same filename in two folders stays distinct; hidden files and folders are
+  skipped;
 - creates a session on first run and records it in `.review-manifest.json` inside the
   folder, so re-runs reuse the session and skip photos already uploaded;
 - processes files in parallel (`-workers`), extracting previews in pure Go: no exiftool,
@@ -168,7 +169,9 @@ private window so the owner and reviewer cookies don't mix.
 
 Back on the session page you'll see each reviewer's verdicts, stars and comments, their
 progress, and a filter by verdict and minimum stars. **Copy filenames** copies the
-filtered filenames one per line, e.g. to select keepers in Lightroom or Capture One.
+filtered filenames one per line, e.g. to select keepers in Lightroom or Capture One. It
+copies names without their folder; if a copied name also exists in another folder (after a
+counter rollover), the button says so, since pasting it would match both.
 
 ### Keeping data across restarts (DynamoDB Local)
 

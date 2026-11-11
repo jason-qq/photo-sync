@@ -90,8 +90,10 @@ type ListSessionsResponse struct {
 //     interrupted upload) or with ?force=true (overwrite its renditions).
 //   - 400 invalid body; 404 session not found.
 type CreatePhotoRequest struct {
-	// Filename is the raw file's base name (no path separators),
-	// 1–MaxFilenameLen characters. Shown only to the owner.
+	// Filename is the raw file's path relative to the session folder, with
+	// "/" between folder names (e.g. "101MSDCF/DSC00001.ARW"; just the name
+	// for files at the top level), 1–MaxFilenameLen characters. Photos sort
+	// by it, so rollover folders keep shot order. Shown only to the owner.
 	Filename string `json:"filename"`
 	// Hash is the lowercase hex SHA-256 of the raw file. Photos are unique
 	// per session by Hash.
@@ -129,7 +131,7 @@ type PhotoResponse struct {
 //
 // Responses: 200 ListPhotosResponse; 404 session not found.
 type ListPhotosResponse struct {
-	// Photos are sorted by Filename. Never null.
+	// Photos are sorted by Filename (a relative path). Never null.
 	Photos []Photo `json:"photos"`
 }
 
