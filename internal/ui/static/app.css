@@ -207,29 +207,45 @@ dialog#viewer::backdrop { background: #000; }
 .viewer-body {
   flex: 1;
   min-height: 0;
-  display: flex;
-  align-items: center;
-  /* Swiping moves the image; keep it from spilling over the rest of the
-     viewer, and don't select text or images while dragging. (touch-action
-     is set from JS, as it depends on the zoom level.) */
+  position: relative;
+  /* The neighbouring photos wait just off screen; keep them from spilling
+     over the rest of the viewer, and don't select text or images while
+     dragging. (touch-action is set from JS, as it depends on the zoom
+     level.) */
   overflow: hidden;
   user-select: none;
   -webkit-user-select: none;
 }
-#viewer-img {
-  flex: 1;
-  min-width: 0;
+/* Previous, current and next photo side by side; JS places each slide
+   (translateX) and moves the whole track while swiping. */
+.viewer-track {
+  position: absolute;
+  inset: 0;
+}
+.viewer-track img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
   height: 100%;
   object-fit: contain;
   -webkit-user-drag: none;
 }
+/* The ‹ › buttons sit over the photo's edges so the photo gets the full
+   width (and swipes can start on them). */
 .nav {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 1;
   background: none;
   border: none;
+  color: #fff;
+  text-shadow: 0 0 6px rgba(0, 0, 0, 0.8);
   font-size: 2.5rem;
   padding: 0 16px;
-  height: 100%;
 }
+#viewer-prev { left: 0; padding-left: max(16px, env(safe-area-inset-left)); }
+#viewer-next { right: 0; padding-right: max(16px, env(safe-area-inset-right)); }
 .nav:disabled { visibility: hidden; }
 
 /* Feedback (shared): tile outlines by verdict, and the panel under the

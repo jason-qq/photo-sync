@@ -422,7 +422,8 @@ function onImageError() {
   lastImageReload = Date.now();
   load();
 }
-document.getElementById("viewer-img").addEventListener("error", onImageError);
+// error doesn't bubble, so listen in the capture phase for every viewer slide.
+document.getElementById("viewer-track").addEventListener("error", onImageError, true);
 
 // --- Data ---
 
